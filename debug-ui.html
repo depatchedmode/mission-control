@@ -1,0 +1,72 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Debug Mission Control UI</title>
+    <style>
+        body { font-family: system-ui; background: #1a1a1a; color: white; padding: 20px; }
+        .debug { background: #333; border-radius: 8px; padding: 15px; margin: 10px 0; }
+        .issue { background: #4a2020; border-left: 4px solid #ff6b6b; }
+        .fix { background: #204a20; border-left: 4px solid #00ff88; }
+        code { background: #222; padding: 2px 6px; border-radius: 4px; }
+    </style>
+</head>
+<body>
+    <h1>🔧 Mission Control UI Debug</h1>
+    
+    <div class="debug issue">
+        <h3>❌ Issue Observed:</h3>
+        <p>UI shows "0 tasks", "0 agents", "0 active" - completely empty state despite successful deployment.</p>
+    </div>
+    
+    <div class="debug">
+        <h3>🔍 Debugging Steps:</h3>
+        <ol>
+            <li><strong>Document initialization:</strong> Added <code>useEffect</code> to populate empty documents</li>
+            <li><strong>Debug logging:</strong> Added console logs for doc, tasks, agents</li>
+            <li><strong>Forced task creation:</strong> Will create 5 core tasks if document is empty</li>
+        </ol>
+    </div>
+    
+    <div class="debug fix">
+        <h3>✅ Expected Fix:</h3>
+        <p>After rebuild, UI should show:</p>
+        <ul>
+            <li>📋 <strong>5 tasks</strong> on the canvas</li>
+            <li>👥 <strong>3 agents</strong> (gary, friday, writer)</li>
+            <li>🔄 <strong>3 active</strong> (in-progress tasks)</li>
+            <li>⏳ <strong>2 todo</strong> (pending tasks)</li>
+        </ul>
+    </div>
+    
+    <div class="debug">
+        <h3>🎯 Test Tasks:</h3>
+        <ul>
+            <li><code>clawd-pxdf</code> - Mission Control (in-progress, @friday)</li>
+            <li><code>clawd-q69t</code> - Fabric Design System (in-progress)</li>
+            <li><code>clawd-tkyd</code> - Resilient Networks Homepage (in-progress)</li>
+            <li><code>clawd-adf4</code> - Patchwork UX Concepts (todo, @friday)</li>
+            <li><code>clawd-pmal</code> - Gary's Dashboard (todo)</li>
+        </ul>
+    </div>
+    
+    <div class="debug">
+        <h3>🌐 Quick Links:</h3>
+        <ul>
+            <li><a href="/tasks/" style="color: #4ecdc4;">Mission Control UI</a></li>
+            <li><a href="/tasks/expected.html" style="color: #4ecdc4;">Expected Tasks List</a></li>
+        </ul>
+    </div>
+    
+    <div class="debug">
+        <h3>🔄 If still empty:</h3>
+        <p>Try these browser debug steps:</p>
+        <ol>
+            <li>Open DevTools (F12)</li>
+            <li>Go to Console tab</li>
+            <li>Look for debug logs: "Doc:", "Tasks:", "Agents:"</li>
+            <li>Check Application tab → IndexedDB for automerge data</li>
+            <li>Try clearing localStorage and refreshing</li>
+        </ol>
+    </div>
+</body>
+</html>
