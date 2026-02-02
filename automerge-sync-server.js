@@ -149,6 +149,29 @@ class AutomergeSyncServer {
       }
     })
     
+    // Mark mention as delivered
+    this.app.post('/automerge/mentions/:id/deliver', async (req, res) => {
+      try {
+        const mentionId = req.params.id
+        await this.store.markMentionDelivered(mentionId)
+        this.broadcastDocumentUpdate()
+        res.json({ success: true, mentionId })
+      } catch (error) {
+        res.status(500).json({ error: error.message })
+      }
+    })
+    
+    // Get pending mentions
+    this.app.get('/automerge/mentions/pending', async (req, res) => {
+      try {
+        const agent = req.query.agent
+        const mentions = await this.store.getPendingMentions(agent)
+        res.json({ success: true, mentions })
+      } catch (error) {
+        res.status(500).json({ error: error.message })
+      }
+    })
+    
     // Add comment (from CLI or other sources)
     this.app.post('/automerge/comment', async (req, res) => {
       try {
