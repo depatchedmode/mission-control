@@ -52,14 +52,22 @@ async function wakeAgent(agentId, message) {
   }
   
   try {
-    // Use fetch to call the OpenClaw gateway API to create a one-shot cron wake
-    // This is a workaround since we can't directly inject into sessions
+    const { execSync } = await import('child_process');
+    const sessionKey = `agent:${agentId}:main`;
     
-    // For now, just log - agents will pick up mentions on heartbeat
-    log(`📨 Mention ready for @${agentId} (will see on next heartbeat)`);
+    // Use openclaw CLI to send message to agent session
+    const cmd = `openclaw sessions send --session-key "${sessionKey}" --message ${JSON.stringify(message)}`;
+    debug(`Executing: ${cmd}`);
+    
+    execSync(cmd, { 
+      timeout: 30000,
+      stdio: ['pipe', 'pipe', 'pipe']
+    });
+    
+    log(`📤 Delivered mention to @${agentId}`);
     return true;
   } catch (err) {
-    log(`❌ Failed to wake ${agentId}: ${err.message}`);
+    log(`❌ Failed to send to ${agentId}: ${err.message}`);
     return false;
   }
 }

@@ -11,6 +11,13 @@
  *   mc agents list
  *   mc show <task-id>
  *   mc tasks
+ *   
+ * Patchwork Features:
+ *   mc timeline [--agent <name>] [--task <id>] [--limit <n>]
+ *   mc diff <task-id>
+ *   mc branch <task-id> <branch-name>
+ *   mc branches <task-id>
+ *   mc merge <branch-task-id>
  */
 
 import { AutomergeStore } from '../lib/automerge-store.js';
@@ -32,6 +39,20 @@ Usage:
   mc show <task-id>                        Show task details
   mc tasks [--status <s>]                  List tasks
 
+Patchwork Features:
+  mc timeline [options]                    Rich timeline view with context
+     --agent <name>                        Filter by agent
+     --task <id>                           Filter by task
+     --limit <n>                           Limit entries (default: 20)
+  mc diff <task-id>                        Show task changes over time
+  mc update <task-id> [options]            Update task with history tracking
+     --status <s>                          Set status (todo/in-progress/completed)
+     --assignee <name>                     Set assignee
+     --title "text"                        Set title
+  mc branch <task-id> <branch-name>        Create a task branch to experiment
+  mc branches <task-id>                    List branches of a task
+  mc merge <branch-task-id>                Merge branch back to parent
+
 Environment:
   MC_AGENT    Your agent name (default: from --agent or 'unknown')
 
@@ -40,6 +61,8 @@ Examples:
   mc comment clawd-pxdf "@friday can you help with the API?"
   mc mentions pending --agent friday
   mc tasks --status in-progress
+  mc timeline --agent friday --limit 10
+  mc branch clawd-pxdf "try-different-approach"
 `);
 }
 
@@ -256,6 +279,224 @@ async function main() {
           console.log(`  ${statusIcon} ${t.id}: ${t.title}`);
           if (t.assignee) console.log(`     @${t.assignee}`);
         }
+      }
+    }
+
+    // ─────────────────────────────────────────
+    // mc timeline [--agent <name>] [--task <id>] [--limit <n>]
+    // Rich timeline view with comments and context
+    // ─────────────────────────────────────────
+    else if (command === 'timeline') {
+      const agent = getArg('agent');
+      const taskFilter = getArg('task');
+      const limit = parseInt(getArg('limit', '20'));
+      
+      const timeline = await store.getTimeline({ agent, task: taskFilter, limit });
+      
+      if (timeline.length === 0) {
+        console.log('No activity found.');
+      } else {
+        console.log('\n┌─── Agent Timeline ─────────────────────────────────────┐');
+        
+        for (const entry of timeline) {
+          const icon = {
+            'comment_added': '💬',
+            'task_created': '📋',
+            'task_updated': '✏️',
+            'task_branched': '🌿',
+            'task_merged': '🔀',
+            'agent_registered': '🤖',
+            'status_changed': '🔄'
+          }[entry.type] || '●';
+          
+          console.log(`│`);
+          console.log(`│ ${icon} ${formatTime(entry.timestamp)} - ${entry.agent ? `@${entry.agent}` : 'System'}`);
+          
+          if (entry.task_id) {
+            const doc = store.getDoc();
+            const task = doc.tasks[entry.task_id];
+            if (task) {
+              console.log(`│   Task: ${task.title} [${entry.task_id}]`);
+            }
+          }
+          
+          if (entry.comment_id) {
+            const doc = store.getDoc();
+            const comment = doc.comments[entry.comment_id];
+            if (comment) {
+              const preview = comment.content.substring(0, 60);
+              console.log(`│   "${preview}${comment.content.length > 60 ? '...' : ''}"`);
+            }
+          }
+          
+          if (entry.details) {
+            console.log(`│   ${entry.details}`);
+          }
+        }
+        
+        console.log(`│`);
+        console.log('└────────────────────────────────────────────────────────┘');
+      }
+    }
+
+    // ─────────────────────────────────────────
+    // mc diff <task-id>
+    // Show task changes over time
+    // ─────────────────────────────────────────
+    else if (command === 'diff') {
+      const taskId = args[1];
+      if (!taskId) {
+        console.error('Usage: mc diff <task-id>');
+        process.exit(1);
+      }
+      
+      const history = await store.getTaskHistory(taskId);
+      
+      if (!history || history.length === 0) {
+        console.log(`No history found for task ${taskId}`);
+      } else {
+        console.log(`\n📜 History for ${taskId}`);
+        console.log('─'.repeat(50));
+        
+        for (const change of history) {
+          console.log(`\n${formatTime(change.timestamp)} ${change.agent ? `@${change.agent}` : ''}`);
+          
+          for (const diff of change.changes) {
+            if (diff.field === 'status') {
+              console.log(`  Status: ${diff.old || '(none)'} → ${diff.new}`);
+            } else if (diff.field === 'assignee') {
+              console.log(`  Assignee: ${diff.old || 'unassigned'} → ${diff.new || 'unassigned'}`);
+            } else if (diff.field === 'title') {
+              console.log(`  Title changed`);
+            } else if (diff.field === 'description') {
+              console.log(`  Description updated`);
+            } else {
+              console.log(`  ${diff.field}: ${diff.old || '(none)'} → ${diff.new}`);
+            }
+          }
+        }
+        console.log();
+      }
+    }
+
+    // ─────────────────────────────────────────
+    // mc update <task-id> [--status <s>] [--assignee <name>] [--title "text"]
+    // Update task with history tracking
+    // ─────────────────────────────────────────
+    else if (command === 'update') {
+      const taskId = args[1];
+      const agent = getArg('agent', process.env.MC_AGENT || 'unknown');
+      
+      if (!taskId) {
+        console.error('Usage: mc update <task-id> [--status <s>] [--assignee <name>] [--title "text"]');
+        process.exit(1);
+      }
+      
+      const updates = {};
+      const status = getArg('status');
+      const assignee = getArg('assignee');
+      const title = getArg('title');
+      
+      if (status) updates.status = status;
+      if (assignee) updates.assignee = assignee;
+      if (title) updates.title = title;
+      
+      if (Object.keys(updates).length === 0) {
+        console.error('No updates specified. Use --status, --assignee, or --title');
+        process.exit(1);
+      }
+      
+      const result = await store.updateTask(taskId, updates, agent);
+      
+      if (result.success) {
+        console.log(`✅ Task ${taskId} updated`);
+        for (const c of result.changes) {
+          console.log(`   ${c.field}: ${c.old || '(none)'} → ${c.new}`);
+        }
+      } else {
+        console.error(`Failed: ${result.error}`);
+        process.exit(1);
+      }
+    }
+
+    // ─────────────────────────────────────────
+    // mc branch <task-id> <branch-name>
+    // Create a task branch to experiment
+    // ─────────────────────────────────────────
+    else if (command === 'branch') {
+      const taskId = args[1];
+      const branchName = args[2];
+      const agent = getArg('agent', process.env.MC_AGENT || 'unknown');
+      
+      if (!taskId || !branchName) {
+        console.error('Usage: mc branch <task-id> <branch-name>');
+        process.exit(1);
+      }
+      
+      const branchId = await store.createBranch(taskId, branchName, agent);
+      
+      if (branchId) {
+        console.log(`🌿 Branch created: ${branchId}`);
+        console.log(`   Parent: ${taskId}`);
+        console.log(`   Name: ${branchName}`);
+        console.log(`\n   Work on the branch, then merge with: mc merge ${branchId}`);
+      } else {
+        console.error('Failed to create branch. Task not found?');
+        process.exit(1);
+      }
+    }
+
+    // ─────────────────────────────────────────
+    // mc branches <task-id>
+    // List branches of a task
+    // ─────────────────────────────────────────
+    else if (command === 'branches') {
+      const taskId = args[1];
+      if (!taskId) {
+        console.error('Usage: mc branches <task-id>');
+        process.exit(1);
+      }
+      
+      const branches = await store.getBranches(taskId);
+      
+      if (branches.length === 0) {
+        console.log(`No branches for ${taskId}`);
+      } else {
+        console.log(`\n🌿 Branches of ${taskId}:\n`);
+        for (const b of branches) {
+          const statusIcon = b.merged ? '🔀' : '🌿';
+          console.log(`  ${statusIcon} ${b.id}: ${b.branch_name}`);
+          console.log(`     Created by @${b.created_by} ${formatTime(b.created_at)}`);
+          if (b.merged) {
+            console.log(`     Merged ${formatTime(b.merged_at)}`);
+          }
+          console.log();
+        }
+      }
+    }
+
+    // ─────────────────────────────────────────
+    // mc merge <branch-task-id>
+    // Merge branch back to parent
+    // ─────────────────────────────────────────
+    else if (command === 'merge') {
+      const branchId = args[1];
+      const agent = getArg('agent', process.env.MC_AGENT || 'unknown');
+      
+      if (!branchId) {
+        console.error('Usage: mc merge <branch-task-id>');
+        process.exit(1);
+      }
+      
+      const result = await store.mergeBranch(branchId, agent);
+      
+      if (result.success) {
+        console.log(`🔀 Branch merged successfully!`);
+        console.log(`   ${branchId} → ${result.parentId}`);
+        console.log(`   Changes applied to parent task`);
+      } else {
+        console.error(`Failed to merge: ${result.error}`);
+        process.exit(1);
       }
     }
 

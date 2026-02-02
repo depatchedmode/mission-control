@@ -71,84 +71,6 @@ class AutomergeSyncServer {
       }
     })
     
-    // Sync with beans backend (import tasks)
-    this.app.post('/automerge/sync-beans', async (req, res) => {
-      try {
-        console.log('🔄 Syncing with beans backend...')
-        
-        // Fetch tasks from beans API
-        const beansResponse = await fetch('http://localhost:8003/beans')
-        if (!beansResponse.ok) {
-          throw new Error(`Beans API error: ${beansResponse.status}`)
-        }
-        
-        const tasks = await beansResponse.json()
-        console.log(`📋 Retrieved ${tasks.length} tasks from beans`)
-        
-        // Update Automerge document with backend tasks
-        await this.store.docHandle.change(doc => {
-          // Initialize structure if needed
-          if (!doc.tasks) doc.tasks = {}
-          if (!doc.backend_sync) doc.backend_sync = {}
-          
-          // Update each task
-          tasks.forEach((task, index) => {
-            const existingTask = doc.tasks[task.id]
-            
-            // Preserve spatial layout if task exists
-            let x = 50, y = 100
-            if (existingTask) {
-              x = existingTask.x
-              y = existingTask.y
-            } else {
-              // New task: position based on status
-              const statusGroups = { 'todo': 0, 'in-progress': 1, 'completed': 2 }
-              const statusGroup = statusGroups[task.status] || 0
-              const itemsInGroup = tasks.filter(t => t.status === task.status)
-              const indexInGroup = itemsInGroup.findIndex(t => t.id === task.id)
-              
-              x = 50 + (statusGroup * 350)
-              y = 100 + (indexInGroup * 160)
-            }
-            
-            doc.tasks[task.id] = {
-              id: task.id,
-              title: task.title,
-              status: task.status,
-              assignee: existingTask?.assignee || null,
-              type: task.type || 'task',
-              description: task.slug || '',
-              x: x,
-              y: y,
-              width: existingTask?.width || 280,
-              height: existingTask?.height || 140,
-              priority: task.priority || 'normal',
-              created_at: task.created_at,
-              updated_at: task.updated_at
-            }
-          })
-          
-          doc.backend_sync.last_beans_sync = new Date().toISOString()
-          doc.backend_sync.tasks_imported = tasks.length
-        })
-        
-        console.log('✅ Backend sync complete')
-        
-        // Broadcast update to connected clients
-        this.broadcastDocumentUpdate()
-        
-        res.json({ 
-          success: true, 
-          synced: tasks.length,
-          timestamp: new Date().toISOString()
-        })
-        
-      } catch (error) {
-        console.error('❌ Beans sync failed:', error)
-        res.status(500).json({ error: error.message })
-      }
-    })
-    
     // Mark mention as delivered
     this.app.post('/automerge/mentions/:id/deliver', async (req, res) => {
       try {
@@ -229,31 +151,62 @@ class AutomergeSyncServer {
   async handleClientMessage(ws, data) {
     switch (data.type) {
       case 'document-change':
-        // Apply change from frontend to backend store
-        console.log('🔄 Applying frontend change to backend')
+        console.log('🔄 Applying frontend change:', data.change?.type)
         
-        // For now, we'll handle specific change types
-        if (data.change && data.change.type === 'task-update') {
+        if (!data.change) break
+        
+        // Handle task update
+        if (data.change.type === 'task-update') {
           await this.store.docHandle.change(doc => {
             const { taskId, updates } = data.change
             if (doc.tasks[taskId]) {
               Object.assign(doc.tasks[taskId], updates)
+              doc.tasks[taskId].updated_at = new Date().toISOString()
               
-              // Log activity
               if (!doc.activity) doc.activity = []
               doc.activity.push({
                 id: Math.random().toString(16).slice(2),
-                type: 'task_updated_frontend',
-                agent: data.agent || 'unknown',
+                type: 'task_updated',
+                agent: data.agent || 'ui',
                 taskId,
                 changes: updates,
                 timestamp: new Date().toISOString()
               })
             }
           })
-          
-          // Broadcast to other clients
-          this.broadcastDocumentUpdate(ws) // exclude sender
+          this.broadcastDocumentUpdate(ws)
+        }
+        
+        // Handle task create
+        if (data.change.type === 'task-create') {
+          await this.store.docHandle.change(doc => {
+            const { task } = data.change
+            if (!doc.tasks) doc.tasks = {}
+            doc.tasks[task.id] = {
+              ...task,
+              created_at: task.created_at || new Date().toISOString(),
+              updated_at: new Date().toISOString()
+            }
+            
+            if (!doc.activity) doc.activity = []
+            doc.activity.push({
+              id: Math.random().toString(16).slice(2),
+              type: 'task_created',
+              agent: data.agent || 'ui',
+              taskId: task.id,
+              timestamp: new Date().toISOString()
+            })
+          })
+          console.log('✅ Task created:', data.change.task.id)
+          this.broadcastDocumentUpdate(ws)
+        }
+        
+        // Handle comment add
+        if (data.change.type === 'comment-add') {
+          const { taskId, comment } = data.change
+          await this.store.addComment(taskId, comment.text, comment.agent)
+          console.log('✅ Comment added to task:', taskId)
+          this.broadcastDocumentUpdate(ws)
         }
         break
         

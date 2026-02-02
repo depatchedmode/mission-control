@@ -5,7 +5,7 @@ import topLevelAwait from 'vite-plugin-top-level-await'
 
 export default defineConfig({
   plugins: [react(), wasm(), topLevelAwait()],
-  base: '/tasks/',
+  base: '/mc/',
   optimizeDeps: {
     exclude: ['@automerge/automerge-wasm']
   },
@@ -15,6 +15,17 @@ export default defineConfig({
     allowedHosts: ['gary-clawd-bot.exe.xyz', 'localhost'],
     fs: {
       allow: ['..']
+    },
+    proxy: {
+      '/mc-ws': {
+        target: 'ws://localhost:8005',
+        ws: true,
+        rewrite: (path) => path.replace(/^\/mc-ws/, '')
+      },
+      '/mc-api': {
+        target: 'http://localhost:8004',
+        rewrite: (path) => path.replace(/^\/mc-api/, '')
+      }
     }
   },
   build: {

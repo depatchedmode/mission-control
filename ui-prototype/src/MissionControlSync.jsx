@@ -1,48 +1,49 @@
 import React, { useState, useEffect, useRef } from 'react'
-import '@tldraw/tldraw/tldraw.css'
+
+// Project configurations - each project has its own Automerge doc
+const PROJECTS = {
+  'mission-control': {
+    name: 'Mission Control',
+    emoji: '🎯',
+    docUrl: 'automerge:3Zto2gxmr3aZFEVLEbwXbVDhzYHF'
+  },
+  // Add more projects here as needed
+  // 'other-project': { name: 'Other Project', emoji: '📦', docUrl: 'automerge:xxx' }
+}
+
+const DEFAULT_PROJECT = 'mission-control'
 
 export default function MissionControlSync() {
+  const [currentProject, setCurrentProject] = useState(DEFAULT_PROJECT)
   const [doc, setDoc] = useState(null)
   const [loading, setLoading] = useState(true)
   const [connected, setConnected] = useState(false)
   const [error, setError] = useState(null)
+  const [showNewTask, setShowNewTask] = useState(false)
+  const [showProjectPicker, setShowProjectPicker] = useState(false)
   const wsRef = useRef(null)
-  const [currentAgent] = useState('friday')
   
-  // Connect to sync server on mount
   useEffect(() => {
     connectToSyncServer()
-    
     return () => {
-      if (wsRef.current) {
-        wsRef.current.close()
-      }
+      if (wsRef.current) wsRef.current.close()
     }
-  }, [])
+  }, [currentProject])
   
   const connectToSyncServer = async () => {
+    setLoading(true)
+    if (wsRef.current) wsRef.current.close()
+    
     try {
-      console.log('🔄 Connecting to Automerge Sync Server...')
+      const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
+      const wsBase = `${wsProtocol}//${window.location.host}/mc-ws`
       
-      // First, trigger backend sync with beans
-      console.log('📡 Syncing backend with beans...')
-      const syncResponse = await fetch('http://localhost:8004/automerge/sync-beans', {
-        method: 'POST'
-      })
-      
-      if (syncResponse.ok) {
-        const syncResult = await syncResponse.json()
-        console.log(`✅ Backend synced: ${syncResult.synced} tasks`)
-      } else {
-        console.error('⚠️ Backend sync failed, continuing with existing data...')
-      }
-      
-      // Connect WebSocket for real-time updates
-      const ws = new WebSocket('ws://localhost:8005')
+      console.log('🔄 Connecting to:', wsBase)
+      const ws = new WebSocket(wsBase)
       wsRef.current = ws
       
       ws.onopen = () => {
-        console.log('🔌 Connected to sync server')
+        console.log('🔌 Connected')
         setConnected(true)
         setError(null)
       }
@@ -50,555 +51,587 @@ export default function MissionControlSync() {
       ws.onmessage = (event) => {
         try {
           const message = JSON.parse(event.data)
-          handleSyncMessage(message)
+          if (message.type === 'document-state' || message.type === 'document-update') {
+            setDoc(message.doc)
+            setLoading(false)
+          }
         } catch (err) {
-          console.error('❌ Failed to parse sync message:', err)
+          console.error('Parse error:', err)
         }
       }
       
       ws.onclose = () => {
-        console.log('🔌 Disconnected from sync server')
         setConnected(false)
-        
-        // Attempt reconnection after 3 seconds
-        setTimeout(() => {
-          console.log('🔄 Attempting to reconnect...')
-          connectToSyncServer()
-        }, 3000)
+        setTimeout(connectToSyncServer, 3000)
       }
       
-      ws.onerror = (err) => {
-        console.error('❌ WebSocket error:', err)
-        setError('Connection failed')
-      }
-      
+      ws.onerror = () => setError('Connection failed')
     } catch (error) {
-      console.error('❌ Sync server connection failed:', error)
       setError(error.message)
       setLoading(false)
     }
   }
   
-  const handleSyncMessage = (message) => {
-    switch (message.type) {
-      case 'document-state':
-      case 'document-update':
-        console.log('📄 Document update received')
-        setDoc(message.doc)
-        setLoading(false)
-        break
-        
-      case 'error':
-        console.error('❌ Sync server error:', message.error)
-        setError(message.error)
-        break
-        
-      case 'pong':
-        // Heartbeat response
-        break
-        
-      default:
-        console.log('⚠️ Unknown sync message:', message.type)
-    }
-  }
-  
-  const updateTask = (taskId, updates) => {
-    // Optimistic update for immediate UI response
-    setDoc(prevDoc => {
-      if (!prevDoc || !prevDoc.tasks[taskId]) return prevDoc
-      
-      const newDoc = JSON.parse(JSON.stringify(prevDoc))
-      Object.assign(newDoc.tasks[taskId], updates)
-      
-      // Add activity entry
-      if (!newDoc.activity) newDoc.activity = []
-      newDoc.activity.push({
-        id: Math.random().toString(16).slice(2),
-        type: 'task_moved_optimistic',
-        agent: currentAgent,
-        taskId,
-        changes: updates,
-        timestamp: new Date().toISOString()
-      })
-      
-      return newDoc
-    })
-    
-    // Send change to sync server
-    if (wsRef.current && wsRef.current.readyState === WebSocket.OPEN) {
+  const sendChange = (change) => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({
         type: 'document-change',
-        change: {
-          type: 'task-update',
-          taskId,
-          updates
-        },
-        agent: currentAgent,
+        change,
+        agent: 'ui',
         timestamp: new Date().toISOString()
       }))
     }
   }
   
-  // Show loading state
-  if (loading) {
-    return (
-      <div style={{ 
-        display: 'flex', 
-        alignItems: 'center', 
-        justifyContent: 'center', 
-        height: '100vh',
-        background: '#1a1a1a',
-        color: 'white'
-      }}>
-        <div style={{ textAlign: 'center' }}>
-          <h2>🚀 Connecting to Mission Control...</h2>
-          <p>Syncing with backend (localhost:8004)</p>
-          {error && (
-            <div style={{ marginTop: 20, color: '#ff4757' }}>
-              ❌ {error}
-            </div>
-          )}
-          <div style={{ marginTop: 20, fontSize: 14, color: '#4ecdc4' }}>
-            {connected ? '🔗 WebSocket Connected' : '⏳ Establishing connection...'}
-          </div>
-        </div>
-      </div>
-    )
+  const createTask = (title, status = 'todo') => {
+    const id = 'task-' + Math.random().toString(36).substr(2, 9)
+    sendChange({
+      type: 'task-create',
+      task: {
+        id,
+        title,
+        status,
+        type: 'task',
+        description: '',
+        assignee: null,
+        created_at: new Date().toISOString()
+      }
+    })
+    setShowNewTask(false)
   }
   
-  // Show error state
-  if (error && !doc) {
+  const updateTaskStatus = (taskId, newStatus) => {
+    sendChange({
+      type: 'task-update',
+      taskId,
+      updates: { status: newStatus }
+    })
+  }
+  
+  const addComment = (taskId, text) => {
+    sendChange({
+      type: 'comment-add',
+      taskId,
+      comment: {
+        id: 'c-' + Math.random().toString(36).substr(2, 9),
+        text,
+        agent: 'ryan',
+        timestamp: new Date().toISOString()
+      }
+    })
+  }
+  
+  if (loading) {
     return (
-      <div style={{ 
-        display: 'flex', 
-        alignItems: 'center', 
-        justifyContent: 'center', 
-        height: '100vh',
-        background: '#1a1a1a',
-        color: 'white'
-      }}>
-        <div style={{ textAlign: 'center' }}>
-          <h2>❌ Connection Error</h2>
-          <p>{error}</p>
-          <button 
-            onClick={connectToSyncServer}
-            style={{
-              marginTop: 20,
-              padding: '12px 24px',
-              background: '#4ecdc4',
-              color: 'black',
-              border: 'none',
-              borderRadius: 6,
-              cursor: 'pointer'
-            }}
-          >
-            Retry Connection
-          </button>
-        </div>
+      <div style={styles.centered}>
+        <h2>🚀 Connecting...</h2>
+        <p style={{ color: '#888' }}>{PROJECTS[currentProject]?.name}</p>
+        {error && <p style={{ color: '#ff4757' }}>❌ {error}</p>}
       </div>
     )
   }
   
   if (!doc) {
-    return (
-      <div style={{ 
-        display: 'flex', 
-        alignItems: 'center', 
-        justifyContent: 'center', 
-        height: '100vh',
-        background: '#1a1a1a',
-        color: 'white'
-      }}>
-        <div>
-          <h2>⚡ Waiting for document...</h2>
-          <p>Real-time sync initializing</p>
-        </div>
-      </div>
-    )
+    return <div style={styles.centered}><h2>⏳ Loading...</h2></div>
   }
   
   const tasks = Object.values(doc.tasks || {})
   const agents = Object.values(doc.agents || {})
-  
-  console.log('Rendering synchronized document:', tasks.length, 'tasks')
+  const todoTasks = tasks.filter(t => t.status === 'todo')
+  const inProgressTasks = tasks.filter(t => t.status === 'in-progress')
+  const completedTasks = tasks.filter(t => t.status === 'completed')
+  const project = PROJECTS[currentProject]
   
   return (
-    <div style={{ width: '100vw', height: '100vh', background: '#1a1a1a' }}>
-      {/* Header with live sync status */}
-      <div className="mission-control-header">
-        <div className="mission-control-logo">
-          🎯 Mission Control (Live Sync)
+    <div style={styles.container}>
+      {/* Header */}
+      <div style={styles.header}>
+        <div 
+          style={styles.logo} 
+          onClick={() => setShowProjectPicker(!showProjectPicker)}
+        >
+          {project.emoji} {project.name} ▾
         </div>
-        <div style={{ marginLeft: 20, fontSize: 12, color: '#888' }}>
-          Backend: Real-time sync • Agent: {currentAgent} • 
-          {doc.backend_sync?.last_beans_sync && (
-            <span> Last sync: {new Date(doc.backend_sync.last_beans_sync).toLocaleTimeString()}</span>
-          )}
-        </div>
-        <div className="mission-control-stats">
-          <div className="stat">
-            📋 {tasks.length} total
-          </div>
-          <div className="stat">
-            👥 {agents.length} agents
-          </div>
-          <div className="stat">
-            ⏳ {tasks.filter(t => t.status === 'todo').length} todo
-          </div>
-          <div className="stat">
-            🔄 {tasks.filter(t => t.status === 'in-progress').length} active
-          </div>
-          <div className="stat">
-            ✅ {tasks.filter(t => t.status === 'completed').length} done
-          </div>
+        <div style={styles.headerRight}>
+          <span style={{ color: connected ? '#00ff88' : '#ff4757', fontSize: 12 }}>
+            {connected ? '●' : '○'}
+          </span>
+          <button style={styles.addBtn} onClick={() => setShowNewTask(true)}>＋</button>
         </div>
       </div>
       
-      {/* Connection status indicators */}
-      <div style={{
-        position: 'absolute',
-        top: 60,
-        right: 20,
-        display: 'flex',
-        flexDirection: 'column',
-        gap: 4
-      }}>
-        <div style={{
-          background: connected ? 'rgba(0, 255, 136, 0.1)' : 'rgba(255, 71, 87, 0.1)',
-          border: `1px solid ${connected ? '#00ff88' : '#ff4757'}`,
-          padding: '4px 8px',
-          borderRadius: 4,
-          fontSize: 11,
-          color: connected ? '#00ff88' : '#ff4757'
-        }}>
-          {connected ? '🔗 Sync Server Connected' : '❌ Sync Disconnected'}
+      {/* Project Picker */}
+      {showProjectPicker && (
+        <div style={styles.picker}>
+          {Object.entries(PROJECTS).map(([key, proj]) => (
+            <div 
+              key={key}
+              style={{
+                ...styles.pickerItem,
+                background: key === currentProject ? '#333' : 'transparent'
+              }}
+              onClick={() => {
+                setCurrentProject(key)
+                setShowProjectPicker(false)
+              }}
+            >
+              {proj.emoji} {proj.name}
+            </div>
+          ))}
+          <div style={styles.pickerDivider} />
+          <div style={styles.pickerItem}>
+            ➕ Add Project...
+          </div>
         </div>
-        
-        {doc.backend_sync?.tasks_imported && (
-          <div style={{
-            background: 'rgba(78, 205, 196, 0.1)',
-            border: '1px solid #4ecdc4',
-            padding: '4px 8px',
-            borderRadius: 4,
-            fontSize: 11,
-            color: '#4ecdc4'
-          }}>
-            📊 {doc.backend_sync.tasks_imported} tasks from backend
-          </div>
-        )}
+      )}
+      
+      {/* New Task Modal */}
+      {showNewTask && (
+        <NewTaskModal 
+          onClose={() => setShowNewTask(false)}
+          onCreate={createTask}
+        />
+      )}
+      
+      {/* Stats */}
+      <div style={styles.stats}>
+        <span>📋 {tasks.length}</span>
+        <span>👥 {agents.length}</span>
+        <span>⏳ {todoTasks.length}</span>
+        <span>🔄 {inProgressTasks.length}</span>
+        <span>✅ {completedTasks.length}</span>
       </div>
       
-      {/* Agent Presence */}
-      <div className="agent-presence">
-        {agents.map(agent => (
-          <div 
-            key={agent.name}
-            className={`agent-badge agent-${agent.name}`}
-            style={{ borderColor: agent.color }}
-          >
-            {agent.name} ({agent.role})
-          </div>
-        ))}
-      </div>
-      
-      {/* Main Canvas */}
-      <div className="canvas-container">
-        <TaskCanvas doc={doc} onUpdateTask={updateTask} currentAgent={currentAgent} />
+      {/* Columns */}
+      <div style={styles.columns}>
+        <TaskColumn 
+          title="📋 TODO" 
+          tasks={todoTasks} 
+          color="#ffd93d"
+          agents={agents}
+          onStatusChange={updateTaskStatus}
+          onComment={addComment}
+        />
+        <TaskColumn 
+          title="🔄 IN PROGRESS" 
+          tasks={inProgressTasks} 
+          color="#4ecdc4"
+          agents={agents}
+          onStatusChange={updateTaskStatus}
+          onComment={addComment}
+        />
+        <TaskColumn 
+          title="✅ DONE" 
+          tasks={completedTasks} 
+          color="#00ff88"
+          agents={agents}
+          onStatusChange={updateTaskStatus}
+          onComment={addComment}
+        />
       </div>
     </div>
   )
 }
 
-function TaskCanvas({ doc, onUpdateTask, currentAgent }) {
-  const tasks = Object.values(doc.tasks || {})
+function NewTaskModal({ onClose, onCreate }) {
+  const [title, setTitle] = useState('')
   
-  const TaskCard = ({ task }) => {
-    const statusColor = {
-      'todo': '#ffd93d',
-      'in-progress': '#4ecdc4', 
-      'completed': '#00ff88'
-    }[task.status] || '#666'
-    
-    const agentColor = doc.agents?.[task.assignee]?.color || '#666'
-    
-    return (
-      <div style={{
-        position: 'absolute',
-        left: task.x,
-        top: task.y,
-        width: task.width,
-        height: task.height,
-        background: 'rgba(0, 0, 0, 0.9)',
-        border: `2px solid ${statusColor}`,
-        borderRadius: 8,
-        padding: 12,
-        cursor: 'move',
-        backdropFilter: 'blur(10px)',
-        color: 'white',
-        fontSize: 12,
-        boxShadow: '0 4px 20px rgba(0,0,0,0.5)',
-        transition: 'transform 0.1s ease' // Smooth movement
-      }}
-      onMouseDown={(e) => {
-        const startX = e.clientX - task.x
-        const startY = e.clientY - task.y
-        
-        const handleMouseMove = (e) => {
-          const newX = Math.max(0, e.clientX - startX)
-          const newY = Math.max(60, e.clientY - startY)
-          onUpdateTask(task.id, { x: newX, y: newY })
-        }
-        
-        const handleMouseUp = () => {
-          document.removeEventListener('mousemove', handleMouseMove)
-          document.removeEventListener('mouseup', handleMouseUp)
-        }
-        
-        document.addEventListener('mousemove', handleMouseMove)
-        document.addEventListener('mouseup', handleMouseUp)
-        e.preventDefault()
-      }}
-    >
-      <div style={{ 
-        fontWeight: 600, 
-        marginBottom: 6,
-        fontSize: 13,
-        lineHeight: 1.2,
-        color: statusColor
-      }}>
-        {task.title}
-      </div>
-      
-      <div style={{ 
-        fontSize: 10,
-        color: '#aaa',
-        marginBottom: 4
-      }}>
-        {task.type} • {task.id}
-      </div>
-      
-      <div style={{ 
-        fontSize: 10,
-        color: '#bbb',
-        marginBottom: 6,
-        lineHeight: 1.3,
-        maxHeight: 40,
-        overflow: 'hidden'
-      }}>
-        {task.description}
-      </div>
-      
-      <div style={{ 
-        fontSize: 10,
-        color: statusColor,
-        fontWeight: 600,
-        textTransform: 'uppercase',
-        marginBottom: 4
-      }}>
-        {task.status}
-      </div>
-      
-      {task.assignee && (
-        <div style={{
-          fontSize: 10,
-          color: agentColor,
-          fontWeight: 500
-        }}>
-          @{task.assignee}
-        </div>
-      )}
-      
-      <div style={{
-        position: 'absolute',
-        top: 6,
-        right: 6,
-        width: 10,
-        height: 10,
-        borderRadius: '50%',
-        background: statusColor,
-        boxShadow: `0 0 6px ${statusColor}`
-      }} />
-      
-      {task.priority && task.priority !== 'normal' && (
-        <div style={{
-          position: 'absolute',
-          top: 6,
-          left: 6,
-          fontSize: 8,
-          color: task.priority === 'high' ? '#ff4757' : '#ffa502',
-          fontWeight: 600
-        }}>
-          {task.priority.toUpperCase()}
-        </div>
-      )}
-    </div>
-    )
+  const handleSubmit = (e) => {
+    e.preventDefault()
+    if (title.trim()) {
+      onCreate(title.trim())
+    }
   }
   
   return (
-    <div style={{ 
-      position: 'relative',
-      width: '100%',
-      height: '100%',
-      background: 'linear-gradient(45deg, #1a1a1a 25%, transparent 25%), linear-gradient(-45deg, #1a1a1a 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #1a1a1a 75%), linear-gradient(-45deg, transparent 75%, #1a1a1a 75%)',
-      backgroundSize: '20px 20px',
-      backgroundPosition: '0 0, 0 10px, 10px -10px, -10px 0px'
-    }}>
-      {/* Status Column Headers */}
-      <div style={{
-        position: 'absolute',
-        top: 20,
-        left: 0,
-        right: 0,
-        display: 'grid',
-        gridTemplateColumns: 'repeat(3, 1fr)',
-        gap: 20,
-        padding: '0 50px',
-        pointerEvents: 'none',
-        zIndex: 1
-      }}>
-        <div style={{ textAlign: 'center' }}>
-          <div style={{ color: '#ffd93d', fontSize: 16, fontWeight: 600, marginBottom: 4 }}>📋 TODO</div>
-          <div style={{ color: '#666', fontSize: 12 }}>{tasks.filter(t => t.status === 'todo').length} tasks</div>
-        </div>
-        <div style={{ textAlign: 'center' }}>
-          <div style={{ color: '#4ecdc4', fontSize: 16, fontWeight: 600, marginBottom: 4 }}>🔄 IN PROGRESS</div>
-          <div style={{ color: '#666', fontSize: 12 }}>{tasks.filter(t => t.status === 'in-progress').length} tasks</div>
-        </div>
-        <div style={{ textAlign: 'center' }}>
-          <div style={{ color: '#00ff88', fontSize: 16, fontWeight: 600, marginBottom: 4 }}>✅ COMPLETED</div>
-          <div style={{ color: '#666', fontSize: 12 }}>{tasks.filter(t => t.status === 'completed').length} tasks</div>
-        </div>
+    <div style={styles.modalOverlay} onClick={onClose}>
+      <div style={styles.modal} onClick={e => e.stopPropagation()}>
+        <h3 style={{ margin: '0 0 16px', color: '#4ecdc4' }}>New Task</h3>
+        <form onSubmit={handleSubmit}>
+          <input
+            type="text"
+            placeholder="Task title..."
+            value={title}
+            onChange={e => setTitle(e.target.value)}
+            style={styles.input}
+            autoFocus
+          />
+          <div style={styles.modalButtons}>
+            <button type="button" style={styles.btnCancel} onClick={onClose}>Cancel</button>
+            <button type="submit" style={styles.btnCreate}>Create</button>
+          </div>
+        </form>
       </div>
-      
-      {/* Status Column Backgrounds */}
-      <div style={{
-        position: 'absolute',
-        top: 60,
-        left: 50,
-        width: 'calc(33% - 20px)',
-        height: 'calc(100vh - 120px)',
-        background: 'rgba(255, 217, 61, 0.03)',
-        border: '1px dashed rgba(255, 217, 61, 0.2)',
-        borderRadius: 8,
-        pointerEvents: 'none'
-      }} />
-      <div style={{
-        position: 'absolute',
-        top: 60,
-        left: 'calc(33% + 30px)',
-        width: 'calc(33% - 20px)',
-        height: 'calc(100vh - 120px)',
-        background: 'rgba(78, 205, 196, 0.03)',
-        border: '1px dashed rgba(78, 205, 196, 0.2)',
-        borderRadius: 8,
-        pointerEvents: 'none'
-      }} />
-      <div style={{
-        position: 'absolute',
-        top: 60,
-        right: 50,
-        width: 'calc(33% - 20px)',
-        height: 'calc(100vh - 120px)',
-        background: 'rgba(0, 255, 136, 0.03)',
-        border: '1px dashed rgba(0, 255, 136, 0.2)',
-        borderRadius: 8,
-        pointerEvents: 'none'
-      }} />
-      
-      {/* Task Cards */}
-      {tasks.map(task => (
-        <TaskCard 
-          key={task.id}
-          task={task}
-        />
-      ))}
-      
-      {/* Real-time indicator */}
-      <div style={{
-        position: 'absolute',
-        bottom: 20,
-        right: 20,
-        background: 'rgba(0, 0, 0, 0.8)',
-        padding: '8px 12px',
-        borderRadius: 6,
-        border: '1px solid #00ff88',
-        color: '#00ff88',
-        fontSize: 11,
-        display: 'flex',
-        alignItems: 'center',
-        gap: 6
-      }}>
-        <div style={{
-          width: 6,
-          height: 6,
-          borderRadius: '50%',
-          background: '#00ff88',
-          animation: 'pulse 1s infinite'
-        }} />
-        Automerge Sync Layer
-      </div>
-      
-      <style>{`
-        @keyframes pulse {
-          0%, 100% { opacity: 1; }
-          50% { opacity: 0.5; }
-        }
-        .mission-control-header {
-          position: absolute;
-          top: 0;
-          left: 0;
-          right: 0;
-          height: 50px;
-          background: rgba(0, 0, 0, 0.9);
-          border-bottom: 1px solid #333;
-          display: flex;
-          align-items: center;
-          padding: 0 20px;
-          z-index: 10;
-        }
-        .mission-control-logo {
-          font-size: 18px;
-          font-weight: 600;
-          color: #4ecdc4;
-        }
-        .mission-control-stats {
-          display: flex;
-          gap: 20px;
-          margin-left: auto;
-        }
-        .stat {
-          font-size: 12px;
-          color: #888;
-          padding: 4px 8px;
-          background: rgba(255, 255, 255, 0.05);
-          border-radius: 4px;
-        }
-        .agent-presence {
-          position: absolute;
-          top: 10px;
-          left: 50%;
-          transform: translateX(-50%);
-          display: flex;
-          gap: 10px;
-          z-index: 5;
-        }
-        .agent-badge {
-          padding: 4px 8px;
-          background: rgba(0, 0, 0, 0.8);
-          border: 1px solid #666;
-          border-radius: 4px;
-          font-size: 11px;
-          color: white;
-        }
-        .canvas-container {
-          position: absolute;
-          top: 50px;
-          left: 0;
-          right: 0;
-          bottom: 0;
-        }
-      `}</style>
     </div>
   )
+}
+
+function TaskColumn({ title, tasks, color, agents, onStatusChange, onComment }) {
+  return (
+    <div style={styles.column}>
+      <div style={{ ...styles.columnHeader, borderColor: color, color }}>
+        {title} ({tasks.length})
+      </div>
+      <div style={styles.taskList}>
+        {tasks.length === 0 && (
+          <div style={styles.emptyColumn}>No tasks</div>
+        )}
+        {tasks.map(task => (
+          <TaskCard 
+            key={task.id} 
+            task={task} 
+            color={color}
+            agents={agents}
+            onStatusChange={onStatusChange}
+            onComment={onComment}
+          />
+        ))}
+      </div>
+    </div>
+  )
+}
+
+function TaskCard({ task, color, agents, onStatusChange, onComment }) {
+  const [expanded, setExpanded] = useState(false)
+  const [showComment, setShowComment] = useState(false)
+  const [commentText, setCommentText] = useState('')
+  
+  const statusCycle = {
+    'todo': 'in-progress',
+    'in-progress': 'completed',
+    'completed': 'todo'
+  }
+  
+  const handleStatusChange = (e) => {
+    e.stopPropagation()
+    onStatusChange(task.id, statusCycle[task.status])
+  }
+  
+  const handleComment = (e) => {
+    e.preventDefault()
+    if (commentText.trim()) {
+      onComment(task.id, commentText.trim())
+      setCommentText('')
+      setShowComment(false)
+    }
+  }
+  
+  return (
+    <div style={{ ...styles.card, borderColor: color }}>
+      <div style={styles.cardHeader} onClick={() => setExpanded(!expanded)}>
+        <div style={styles.cardTitle}>{task.title}</div>
+        <button style={styles.statusBtn} onClick={handleStatusChange}>
+          {task.status === 'todo' ? '▶' : task.status === 'in-progress' ? '✓' : '↺'}
+        </button>
+      </div>
+      
+      {task.assignee && (
+        <div style={styles.assignee}>@{task.assignee}</div>
+      )}
+      
+      {expanded && (
+        <div style={styles.cardDetails}>
+          {task.description && (
+            <div style={styles.cardDesc}>{task.description}</div>
+          )}
+          <div style={styles.cardMeta}>{task.type} • {task.id}</div>
+          
+          {/* Comments */}
+          {task.comments && task.comments.length > 0 && (
+            <div style={styles.comments}>
+              {task.comments.map(c => (
+                <div key={c.id} style={styles.comment}>
+                  <span style={styles.commentAuthor}>@{c.agent}</span>: {c.text}
+                </div>
+              ))}
+            </div>
+          )}
+          
+          {/* Add comment */}
+          {showComment ? (
+            <form onSubmit={handleComment} style={styles.commentForm}>
+              <input
+                type="text"
+                placeholder="Add comment... (use @agent to mention)"
+                value={commentText}
+                onChange={e => setCommentText(e.target.value)}
+                style={styles.commentInput}
+                autoFocus
+              />
+              <button type="submit" style={styles.commentBtn}>Send</button>
+            </form>
+          ) : (
+            <button 
+              style={styles.addCommentBtn} 
+              onClick={(e) => { e.stopPropagation(); setShowComment(true) }}
+            >
+              💬 Comment
+            </button>
+          )}
+        </div>
+      )}
+    </div>
+  )
+}
+
+const styles = {
+  container: {
+    minHeight: '100vh',
+    background: '#1a1a1a',
+    color: 'white',
+    fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif',
+    paddingBottom: 40,
+  },
+  centered: {
+    display: 'flex',
+    flexDirection: 'column',
+    alignItems: 'center',
+    justifyContent: 'center',
+    height: '100vh',
+    background: '#1a1a1a',
+    color: 'white',
+  },
+  header: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    padding: '12px 16px',
+    borderBottom: '1px solid #333',
+    position: 'sticky',
+    top: 0,
+    background: '#1a1a1a',
+    zIndex: 100,
+  },
+  logo: {
+    fontSize: 16,
+    fontWeight: 600,
+    color: '#4ecdc4',
+    cursor: 'pointer',
+  },
+  headerRight: {
+    display: 'flex',
+    alignItems: 'center',
+    gap: 12,
+  },
+  addBtn: {
+    background: '#4ecdc4',
+    color: '#1a1a1a',
+    border: 'none',
+    borderRadius: 6,
+    width: 32,
+    height: 32,
+    fontSize: 20,
+    fontWeight: 600,
+    cursor: 'pointer',
+  },
+  picker: {
+    position: 'absolute',
+    top: 50,
+    left: 16,
+    background: '#2a2a2a',
+    border: '1px solid #444',
+    borderRadius: 8,
+    padding: 8,
+    zIndex: 200,
+    minWidth: 200,
+  },
+  pickerItem: {
+    padding: '10px 12px',
+    borderRadius: 4,
+    cursor: 'pointer',
+  },
+  pickerDivider: {
+    height: 1,
+    background: '#444',
+    margin: '8px 0',
+  },
+  stats: {
+    display: 'flex',
+    gap: 16,
+    padding: '8px 16px',
+    fontSize: 13,
+    borderBottom: '1px solid #333',
+    background: '#222',
+    overflowX: 'auto',
+  },
+  columns: {
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 16,
+    padding: 16,
+  },
+  column: {
+    background: '#222',
+    borderRadius: 8,
+    overflow: 'hidden',
+  },
+  columnHeader: {
+    padding: '10px 12px',
+    fontWeight: 600,
+    fontSize: 14,
+    borderLeft: '3px solid',
+    background: '#2a2a2a',
+  },
+  taskList: {
+    padding: 8,
+    display: 'flex',
+    flexDirection: 'column',
+    gap: 8,
+  },
+  emptyColumn: {
+    padding: 16,
+    textAlign: 'center',
+    color: '#666',
+    fontSize: 13,
+  },
+  card: {
+    background: '#1a1a1a',
+    border: '1px solid',
+    borderRadius: 6,
+    padding: 12,
+  },
+  cardHeader: {
+    display: 'flex',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    cursor: 'pointer',
+  },
+  cardTitle: {
+    fontWeight: 500,
+    fontSize: 14,
+    flex: 1,
+    paddingRight: 8,
+  },
+  statusBtn: {
+    background: '#333',
+    border: 'none',
+    borderRadius: 4,
+    color: 'white',
+    width: 28,
+    height: 28,
+    fontSize: 14,
+    cursor: 'pointer',
+  },
+  assignee: {
+    fontSize: 12,
+    color: '#4ecdc4',
+    marginTop: 4,
+  },
+  cardDetails: {
+    marginTop: 12,
+    paddingTop: 12,
+    borderTop: '1px solid #333',
+  },
+  cardDesc: {
+    fontSize: 13,
+    color: '#999',
+    marginBottom: 8,
+    lineHeight: 1.4,
+  },
+  cardMeta: {
+    fontSize: 11,
+    color: '#666',
+    marginBottom: 8,
+  },
+  comments: {
+    marginTop: 8,
+    padding: 8,
+    background: '#252525',
+    borderRadius: 4,
+  },
+  comment: {
+    fontSize: 12,
+    color: '#ccc',
+    marginBottom: 4,
+  },
+  commentAuthor: {
+    color: '#4ecdc4',
+    fontWeight: 500,
+  },
+  commentForm: {
+    display: 'flex',
+    gap: 8,
+    marginTop: 8,
+  },
+  commentInput: {
+    flex: 1,
+    background: '#333',
+    border: '1px solid #444',
+    borderRadius: 4,
+    padding: '8px 10px',
+    color: 'white',
+    fontSize: 13,
+  },
+  commentBtn: {
+    background: '#4ecdc4',
+    color: '#1a1a1a',
+    border: 'none',
+    borderRadius: 4,
+    padding: '8px 12px',
+    fontWeight: 500,
+    cursor: 'pointer',
+  },
+  addCommentBtn: {
+    background: 'transparent',
+    border: '1px solid #444',
+    borderRadius: 4,
+    padding: '6px 10px',
+    color: '#888',
+    fontSize: 12,
+    cursor: 'pointer',
+    marginTop: 8,
+  },
+  modalOverlay: {
+    position: 'fixed',
+    top: 0,
+    left: 0,
+    right: 0,
+    bottom: 0,
+    background: 'rgba(0,0,0,0.8)',
+    display: 'flex',
+    alignItems: 'center',
+    justifyContent: 'center',
+    zIndex: 1000,
+    padding: 20,
+  },
+  modal: {
+    background: '#2a2a2a',
+    borderRadius: 12,
+    padding: 20,
+    width: '100%',
+    maxWidth: 400,
+  },
+  input: {
+    width: '100%',
+    background: '#1a1a1a',
+    border: '1px solid #444',
+    borderRadius: 6,
+    padding: '12px 14px',
+    color: 'white',
+    fontSize: 15,
+    boxSizing: 'border-box',
+  },
+  modalButtons: {
+    display: 'flex',
+    gap: 12,
+    marginTop: 16,
+    justifyContent: 'flex-end',
+  },
+  btnCancel: {
+    background: 'transparent',
+    border: '1px solid #444',
+    borderRadius: 6,
+    padding: '10px 16px',
+    color: '#888',
+    cursor: 'pointer',
+  },
+  btnCreate: {
+    background: '#4ecdc4',
+    border: 'none',
+    borderRadius: 6,
+    padding: '10px 20px',
+    color: '#1a1a1a',
+    fontWeight: 600,
+    cursor: 'pointer',
+  },
 }
