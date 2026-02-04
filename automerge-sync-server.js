@@ -325,7 +325,8 @@ class AutomergeSyncServer {
           const { taskId, comment } = data.change
           await this.store.addComment(taskId, comment.text, comment.agent)
           console.log('✅ Comment added to task:', taskId)
-          this.broadcastDocumentUpdate(ws)
+          // Don't exclude sender - UI doesn't do optimistic updates for comments
+          this.broadcastDocumentUpdate(null)
         }
         break
         
