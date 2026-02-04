@@ -109,6 +109,125 @@ class AutomergeSyncServer {
       }
     })
     
+    // Register agent
+    this.app.post('/automerge/agent', async (req, res) => {
+      try {
+        const { name, sessionKey, role } = req.body
+        if (!name || !sessionKey) {
+          return res.status(400).json({ error: 'Name and sessionKey are required' })
+        }
+        
+        await this.store.registerAgent(name, sessionKey, role || 'Agent')
+        this.broadcastDocumentUpdate()
+        
+        res.json({ success: true, name })
+      } catch (error) {
+        res.status(500).json({ error: error.message })
+      }
+    })
+    
+    // Create task (from CLI or other sources)
+    this.app.post('/automerge/task', async (req, res) => {
+      try {
+        const { title, description, priority, assignee, tags, status, agent } = req.body
+        if (!title) {
+          return res.status(400).json({ error: 'Title is required' })
+        }
+        
+        const taskId = 'task-' + Math.random().toString(36).substr(2, 9)
+        await this.store.docHandle.change(doc => {
+          if (!doc.tasks) doc.tasks = {}
+          doc.tasks[taskId] = {
+            id: taskId,
+            title,
+            description: description || '',
+            priority: priority || 'p2',
+            assignee: assignee || null,
+            tags: tags || [],
+            status: status || 'todo',
+            type: 'task',
+            order: Date.now(),
+            created_at: new Date().toISOString(),
+            updated_at: new Date().toISOString()
+          }
+          
+          if (!doc.activity) doc.activity = []
+          doc.activity.push({
+            id: Math.random().toString(16).slice(2),
+            type: 'task_created',
+            agent: agent || 'api',
+            taskId,
+            timestamp: new Date().toISOString()
+          })
+        })
+        
+        // Broadcast update
+        this.broadcastDocumentUpdate()
+        
+        res.json({ success: true, taskId })
+      } catch (error) {
+        res.status(500).json({ error: error.message })
+      }
+    })
+    
+    // Update task (from CLI or other sources)
+    this.app.patch('/automerge/task/:taskId', async (req, res) => {
+      try {
+        const { taskId } = req.params
+        const { status, assignee, title, description, priority, agent } = req.body
+        
+        const doc = this.store.getDoc()
+        if (!doc.tasks?.[taskId]) {
+          return res.status(404).json({ error: `Task ${taskId} not found` })
+        }
+        
+        const changes = []
+        const oldTask = doc.tasks[taskId]
+        
+        await this.store.docHandle.change(doc => {
+          if (status && doc.tasks[taskId].status !== status) {
+            changes.push({ field: 'status', old: doc.tasks[taskId].status, new: status })
+            doc.tasks[taskId].status = status
+          }
+          if (assignee !== undefined && doc.tasks[taskId].assignee !== assignee) {
+            changes.push({ field: 'assignee', old: doc.tasks[taskId].assignee, new: assignee })
+            doc.tasks[taskId].assignee = assignee || null
+          }
+          if (title && doc.tasks[taskId].title !== title) {
+            changes.push({ field: 'title', old: doc.tasks[taskId].title, new: title })
+            doc.tasks[taskId].title = title
+          }
+          if (description !== undefined && doc.tasks[taskId].description !== description) {
+            changes.push({ field: 'description', old: doc.tasks[taskId].description, new: description })
+            doc.tasks[taskId].description = description
+          }
+          if (priority && doc.tasks[taskId].priority !== priority) {
+            changes.push({ field: 'priority', old: doc.tasks[taskId].priority, new: priority })
+            doc.tasks[taskId].priority = priority
+          }
+          
+          if (changes.length > 0) {
+            doc.tasks[taskId].updated_at = new Date().toISOString()
+            
+            if (!doc.activity) doc.activity = []
+            doc.activity.push({
+              id: Math.random().toString(16).slice(2),
+              type: 'task_updated',
+              agent: agent || 'api',
+              taskId,
+              changes,
+              timestamp: new Date().toISOString()
+            })
+          }
+        })
+        
+        this.broadcastDocumentUpdate()
+        res.json({ success: true, taskId, changes })
+      } catch (error) {
+        res.status(500).json({ error: error.message })
+      }
+    })
+    
     console.log('🌐 HTTP API routes configured')
   }
   

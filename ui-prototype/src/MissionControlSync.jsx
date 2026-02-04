@@ -1,6 +1,17 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import Markdown from 'react-markdown'
 
+// Track last seen comment timestamps per task
+const getLastSeen = () => {
+  try { return JSON.parse(localStorage.getItem('mc-last-seen') || '{}') } 
+  catch { return {} }
+}
+const setLastSeen = (taskId, timestamp) => {
+  const seen = getLastSeen()
+  seen[taskId] = timestamp
+  localStorage.setItem('mc-last-seen', JSON.stringify(seen))
+}
+
 const PRIORITIES = [
   { value: 'p0', label: 'P0', color: '#ef4444' },
   { value: 'p1', label: 'P1', color: '#f97316' },
@@ -103,6 +114,14 @@ export default function MissionControlSync() {
   
   const getTaskComments = (taskId) => comments.filter(c => c.task_id === taskId).sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp))
   
+  const getUnreadCount = (taskId) => {
+    const taskComments = getTaskComments(taskId)
+    if (taskComments.length === 0) return 0
+    const lastSeen = getLastSeen()[taskId]
+    if (!lastSeen) return taskComments.length
+    return taskComments.filter(c => new Date(c.timestamp) > new Date(lastSeen)).length
+  }
+  
   return (
     <div style={styles.container}>
       <header style={styles.header}>
@@ -116,11 +135,11 @@ export default function MissionControlSync() {
       
       <div className="mc-board">
         <TaskColumn title="To Do" status="todo" tasks={todoTasks} onSelect={setSelectedTask} 
-          onDragStart={setDraggedTask} onDrop={handleDrop} isDragging={!!draggedTask} />
+          onDragStart={setDraggedTask} onDrop={handleDrop} isDragging={!!draggedTask} getUnreadCount={getUnreadCount} />
         <TaskColumn title="In Progress" status="in-progress" tasks={inProgressTasks} highlight onSelect={setSelectedTask}
-          onDragStart={setDraggedTask} onDrop={handleDrop} isDragging={!!draggedTask} />
+          onDragStart={setDraggedTask} onDrop={handleDrop} isDragging={!!draggedTask} getUnreadCount={getUnreadCount} />
         <TaskColumn title="Done" status="completed" tasks={completedTasks} onSelect={setSelectedTask}
-          onDragStart={setDraggedTask} onDrop={handleDrop} isDragging={!!draggedTask} />
+          onDragStart={setDraggedTask} onDrop={handleDrop} isDragging={!!draggedTask} getUnreadCount={getUnreadCount} />
       </div>
       
       {showNewTask && <NewTaskModal onClose={() => setShowNewTask(false)} onCreate={createTask} />}
@@ -139,7 +158,7 @@ export default function MissionControlSync() {
   )
 }
 
-function TaskColumn({ title, status, tasks, highlight, onSelect, onDragStart, onDrop, isDragging }) {
+function TaskColumn({ title, status, tasks, highlight, onSelect, onDragStart, onDrop, isDragging, getUnreadCount }) {
   const [dragOver, setDragOver] = useState(false)
   
   const handleDragOver = (e) => { e.preventDefault(); setDragOver(true) }
@@ -164,7 +183,7 @@ function TaskColumn({ title, status, tasks, highlight, onSelect, onDragStart, on
       </div>
       <div style={styles.columnBody}>
         {tasks.map(task => (
-          <TaskCard key={task.id} task={task} onSelect={onSelect} onDragStart={onDragStart} />
+          <TaskCard key={task.id} task={task} onSelect={onSelect} onDragStart={onDragStart} unreadCount={getUnreadCount(task.id)} />
         ))}
         {tasks.length === 0 && <p style={styles.emptyText}>{isDragging ? 'Drop here' : 'No tasks'}</p>}
       </div>
@@ -172,7 +191,7 @@ function TaskColumn({ title, status, tasks, highlight, onSelect, onDragStart, on
   )
 }
 
-function TaskCard({ task, onSelect, onDragStart }) {
+function TaskCard({ task, onSelect, onDragStart, unreadCount }) {
   const priority = PRIORITIES.find(p => p.value === task.priority)
   
   const handleDragStart = (e) => {
@@ -183,7 +202,7 @@ function TaskCard({ task, onSelect, onDragStart }) {
   return (
     <div 
       className="mc-card" 
-      style={styles.card} 
+      style={{ ...styles.card, ...(unreadCount > 0 ? styles.cardUnread : {}) }} 
       onClick={() => onSelect(task)}
       draggable
       onDragStart={handleDragStart}
@@ -192,6 +211,7 @@ function TaskCard({ task, onSelect, onDragStart }) {
       <div style={styles.cardTop}>
         {priority && <span style={{ ...styles.priorityDot, background: priority.color }} title={priority.label} />}
         <p style={styles.cardTitle}>{task.title}</p>
+        {unreadCount > 0 && <span style={styles.unreadBadge}>{unreadCount}</span>}
       </div>
       <div style={styles.cardMeta}>
         {task.assignee && <span style={styles.cardAssignee}>@{task.assignee}</span>}
@@ -239,6 +259,29 @@ function TaskDetailModal({ task, comments, agents, onClose, onUpdate, onComment 
   const [mentionFilter, setMentionFilter] = useState('')
   const [newTag, setNewTag] = useState('')
   const inputRef = useRef(null)
+  const commentsEndRef = useRef(null)
+  const commentsContainerRef = useRef(null)
+  const prevCommentsLength = useRef(comments.length)
+  
+  // Mark as read when opening + when new comments arrive
+  useEffect(() => {
+    if (comments.length > 0) {
+      const latestTimestamp = comments[comments.length - 1].timestamp
+      setLastSeen(task.id, latestTimestamp)
+    }
+  }, [task.id, comments.length])
+  
+  // Scroll to bottom when new comments arrive
+  useEffect(() => {
+    if (comments.length > prevCommentsLength.current) {
+      commentsEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+    }
+    prevCommentsLength.current = comments.length
+  }, [comments.length])
+  
+  const scrollToRecent = () => {
+    commentsEndRef.current?.scrollIntoView({ behavior: 'smooth' })
+  }
   
   const statusCycle = { 'todo': 'in-progress', 'in-progress': 'completed', 'completed': 'todo' }
   const statusLabels = { 'todo': 'To Do', 'in-progress': 'In Progress', 'completed': 'Done' }
@@ -357,17 +400,25 @@ function TaskDetailModal({ task, comments, agents, onClose, onUpdate, onComment 
           )}
           
           <div style={styles.commentsSection}>
-            <h3 style={styles.sectionTitle}>Comments {comments.length > 0 && `(${comments.length})`}</h3>
+            <div style={styles.commentsSectionHeader}>
+              <h3 style={styles.sectionTitle}>Comments {comments.length > 0 && `(${comments.length})`}</h3>
+              {comments.length > 3 && (
+                <button style={styles.jumpBtn} onClick={scrollToRecent}>↓ Recent</button>
+              )}
+            </div>
             
-            {comments.map(c => (
-              <div key={c.id} style={styles.comment}>
-                <div style={styles.commentHeader}>
-                  <span style={styles.commentAuthor}>@{c.agent}</span>
-                  <span style={styles.commentTime}>{formatTime(c.timestamp)}</span>
+            <div ref={commentsContainerRef} style={styles.commentsContainer}>
+              {comments.map(c => (
+                <div key={c.id} style={styles.comment}>
+                  <div style={styles.commentHeader}>
+                    <span style={styles.commentAuthor}>@{c.agent}</span>
+                    <span style={styles.commentTime}>{formatTime(c.timestamp)}</span>
+                  </div>
+                  <div style={styles.commentBody}>{c.content || c.text}</div>
                 </div>
-                <div style={styles.commentBody}>{c.content}</div>
-              </div>
-            ))}
+              ))}
+              <div ref={commentsEndRef} />
+            </div>
             
             <form onSubmit={handleComment} style={styles.commentForm}>
               <div style={styles.commentInputWrapper}>
@@ -411,7 +462,9 @@ const styles = {
   columnCountHighlight: { color: '#fff', background: '#10b981' },
   columnBody: { padding: '8px 12px', minHeight: 100 },
   
-  card: { background: '#111', border: '1px solid #1a1a1a', borderRadius: 8, padding: '12px 14px', marginBottom: 8, cursor: 'grab', transition: 'border-color 0.15s' },
+  card: { background: '#111', border: '1px solid #1a1a1a', borderRadius: 8, padding: '12px 14px', marginBottom: 8, cursor: 'grab', transition: 'border-color 0.15s, box-shadow 0.15s' },
+  cardUnread: { borderColor: '#10b981', boxShadow: '0 0 0 1px #10b981' },
+  unreadBadge: { marginLeft: 'auto', background: '#10b981', color: '#fff', fontSize: 11, fontWeight: 600, padding: '2px 6px', borderRadius: 10, minWidth: 18, textAlign: 'center' },
   cardTop: { display: 'flex', alignItems: 'flex-start', gap: 8 },
   priorityDot: { width: 8, height: 8, borderRadius: '50%', marginTop: 5, flexShrink: 0 },
   cardTitle: { fontSize: 14, fontWeight: 400, color: '#e5e5e5', margin: 0, lineHeight: 1.4 },
@@ -458,8 +511,11 @@ const styles = {
   mdLi: { marginBottom: 6, lineHeight: 1.5 },
   mdStrong: { color: '#fff', fontWeight: 600 },
   
-  commentsSection: { marginTop: 24 },
-  sectionTitle: { fontSize: 14, fontWeight: 500, color: '#888', textTransform: 'uppercase', letterSpacing: '0.05em', margin: '0 0 16px' },
+  commentsSection: { marginTop: 24, display: 'flex', flexDirection: 'column', minHeight: 200 },
+  commentsSectionHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
+  sectionTitle: { fontSize: 14, fontWeight: 500, color: '#888', textTransform: 'uppercase', letterSpacing: '0.05em', margin: 0 },
+  jumpBtn: { background: '#1a1a1a', border: '1px solid #333', color: '#888', borderRadius: 6, padding: '4px 10px', fontSize: 12, cursor: 'pointer' },
+  commentsContainer: { flex: 1, maxHeight: 400, overflowY: 'auto' },
   comment: { background: '#111', border: '1px solid #1a1a1a', borderRadius: 8, padding: 16, marginBottom: 12 },
   commentHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
   commentAuthor: { fontSize: 13, fontWeight: 500, color: '#10b981' },
