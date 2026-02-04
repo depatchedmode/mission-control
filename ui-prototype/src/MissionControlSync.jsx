@@ -414,7 +414,14 @@ function TaskDetailModal({ task, comments, agents, onClose, onUpdate, onComment 
                     <span style={styles.commentAuthor}>@{c.agent}</span>
                     <span style={styles.commentTime}>{formatTime(c.timestamp)}</span>
                   </div>
-                  <div style={styles.commentBody}>{c.content || c.text}</div>
+                  <div style={styles.commentBody}>
+                    <Markdown components={{
+                      p: ({children}) => <span>{children}</span>,
+                      a: ({href, children}) => <a href={href} target="_blank" rel="noopener noreferrer" style={{color: '#10b981'}}>{children}</a>,
+                      code: ({children}) => <code style={{background: '#1a1a1a', padding: '2px 4px', borderRadius: 3, fontSize: '0.9em'}}>{children}</code>,
+                      strong: ({children}) => <strong style={{color: '#fff'}}>{children}</strong>,
+                    }}>{c.content || c.text}</Markdown>
+                  </div>
                 </div>
               ))}
               <div ref={commentsEndRef} />
