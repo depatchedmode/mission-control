@@ -1,233 +1,203 @@
-import React, { useState, useEffect, useRef } from 'react'
+import React, { useState, useEffect, useRef, useCallback } from 'react'
+import Markdown from 'react-markdown'
 
-// Project configurations - each project has its own Automerge doc
-const PROJECTS = {
-  'mission-control': {
-    name: 'Mission Control',
-    emoji: '🎯',
-    docUrl: 'automerge:3Zto2gxmr3aZFEVLEbwXbVDhzYHF'
-  },
-  // Add more projects here as needed
-  // 'other-project': { name: 'Other Project', emoji: '📦', docUrl: 'automerge:xxx' }
-}
-
-const DEFAULT_PROJECT = 'mission-control'
+const PRIORITIES = [
+  { value: 'p0', label: 'P0', color: '#ef4444' },
+  { value: 'p1', label: 'P1', color: '#f97316' },
+  { value: 'p2', label: 'P2', color: '#eab308' },
+  { value: 'p3', label: 'P3', color: '#666' },
+]
 
 export default function MissionControlSync() {
-  const [currentProject, setCurrentProject] = useState(DEFAULT_PROJECT)
   const [doc, setDoc] = useState(null)
   const [loading, setLoading] = useState(true)
   const [connected, setConnected] = useState(false)
   const [error, setError] = useState(null)
   const [showNewTask, setShowNewTask] = useState(false)
-  const [showProjectPicker, setShowProjectPicker] = useState(false)
+  const [selectedTask, setSelectedTask] = useState(null)
+  const [draggedTask, setDraggedTask] = useState(null)
   const wsRef = useRef(null)
   
   useEffect(() => {
     connectToSyncServer()
-    return () => {
-      if (wsRef.current) wsRef.current.close()
-    }
-  }, [currentProject])
+    return () => { if (wsRef.current) wsRef.current.close() }
+  }, [])
+  
+  useEffect(() => {
+    const handleEsc = (e) => { if (e.key === 'Escape') { setSelectedTask(null); setShowNewTask(false) } }
+    window.addEventListener('keydown', handleEsc)
+    return () => window.removeEventListener('keydown', handleEsc)
+  }, [])
   
   const connectToSyncServer = async () => {
     setLoading(true)
     if (wsRef.current) wsRef.current.close()
-    
     try {
       const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-      const wsBase = `${wsProtocol}//${window.location.host}/mc-ws`
-      
-      console.log('🔄 Connecting to:', wsBase)
-      const ws = new WebSocket(wsBase)
+      const ws = new WebSocket(`${wsProtocol}//${window.location.host}/mc-ws`)
       wsRef.current = ws
-      
-      ws.onopen = () => {
-        console.log('🔌 Connected')
-        setConnected(true)
-        setError(null)
-      }
-      
+      ws.onopen = () => { setConnected(true); setError(null) }
       ws.onmessage = (event) => {
-        try {
-          const message = JSON.parse(event.data)
-          if (message.type === 'document-state' || message.type === 'document-update') {
-            setDoc(message.doc)
-            setLoading(false)
+        const message = JSON.parse(event.data)
+        if (message.type === 'document-state' || message.type === 'document-update') {
+          setDoc(message.doc)
+          setLoading(false)
+          // Update selected task if it changed
+          if (selectedTask && message.doc.tasks[selectedTask.id]) {
+            setSelectedTask(message.doc.tasks[selectedTask.id])
           }
-        } catch (err) {
-          console.error('Parse error:', err)
         }
       }
-      
-      ws.onclose = () => {
-        setConnected(false)
-        setTimeout(connectToSyncServer, 3000)
-      }
-      
+      ws.onclose = () => { setConnected(false); setTimeout(connectToSyncServer, 3000) }
       ws.onerror = () => setError('Connection failed')
-    } catch (error) {
-      setError(error.message)
-      setLoading(false)
-    }
+    } catch (error) { setError(error.message); setLoading(false) }
   }
   
-  const sendChange = (change) => {
+  const sendChange = useCallback((change) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({
-        type: 'document-change',
-        change,
-        agent: 'ui',
-        timestamp: new Date().toISOString()
-      }))
+      wsRef.current.send(JSON.stringify({ type: 'document-change', change, agent: 'depatched', timestamp: new Date().toISOString() }))
     }
-  }
+  }, [])
   
-  const createTask = (title, status = 'todo') => {
+  const createTask = (title, priority = 'p2') => {
     const id = 'task-' + Math.random().toString(36).substr(2, 9)
-    sendChange({
-      type: 'task-create',
-      task: {
-        id,
-        title,
-        status,
-        type: 'task',
-        description: '',
-        assignee: null,
-        created_at: new Date().toISOString()
-      }
-    })
+    sendChange({ type: 'task-create', task: { id, title, status: 'todo', priority, tags: [], order: Date.now(), type: 'task', description: '', assignee: null, created_at: new Date().toISOString() } })
     setShowNewTask(false)
   }
   
-  const updateTaskStatus = (taskId, newStatus) => {
-    sendChange({
-      type: 'task-update',
-      taskId,
-      updates: { status: newStatus }
-    })
+  const updateTask = (taskId, updates) => {
+    sendChange({ type: 'task-update', taskId, updates })
+    if (selectedTask?.id === taskId) {
+      setSelectedTask(prev => ({ ...prev, ...updates }))
+    }
   }
   
   const addComment = (taskId, text) => {
-    sendChange({
-      type: 'comment-add',
-      taskId,
-      comment: {
-        id: 'c-' + Math.random().toString(36).substr(2, 9),
-        text,
-        agent: 'ryan',
-        timestamp: new Date().toISOString()
-      }
-    })
+    sendChange({ type: 'comment-add', taskId, comment: { id: 'c-' + Math.random().toString(36).substr(2, 9), text, agent: 'depatched', timestamp: new Date().toISOString() } })
   }
   
-  if (loading) {
-    return (
-      <div style={styles.centered}>
-        <h2>🚀 Connecting...</h2>
-        <p style={{ color: '#888' }}>{PROJECTS[currentProject]?.name}</p>
-        {error && <p style={{ color: '#ff4757' }}>❌ {error}</p>}
-      </div>
-    )
+  const handleDrop = (taskId, newStatus) => {
+    if (draggedTask && draggedTask.status !== newStatus) {
+      updateTask(taskId, { status: newStatus })
+    }
+    setDraggedTask(null)
   }
   
-  if (!doc) {
-    return <div style={styles.centered}><h2>⏳ Loading...</h2></div>
-  }
+  if (loading) return <div style={styles.centered}><div style={styles.spinner} /><p style={styles.loadingText}>Connecting...</p></div>
+  if (!doc) return <div style={styles.centered}><p style={styles.loadingText}>Loading...</p></div>
   
   const tasks = Object.values(doc.tasks || {})
   const agents = Object.values(doc.agents || {})
-  const todoTasks = tasks.filter(t => t.status === 'todo')
-  const inProgressTasks = tasks.filter(t => t.status === 'in-progress')
-  const completedTasks = tasks.filter(t => t.status === 'completed')
-  const project = PROJECTS[currentProject]
+  const comments = Object.values(doc.comments || {})
+  
+  const sortTasks = (taskList) => taskList.sort((a, b) => {
+    const pa = PRIORITIES.findIndex(p => p.value === a.priority)
+    const pb = PRIORITIES.findIndex(p => p.value === b.priority)
+    if (pa !== pb) return pa - pb
+    return (a.order || 0) - (b.order || 0)
+  })
+  
+  const todoTasks = sortTasks(tasks.filter(t => t.status === 'todo'))
+  const inProgressTasks = sortTasks(tasks.filter(t => t.status === 'in-progress'))
+  const completedTasks = sortTasks(tasks.filter(t => t.status === 'completed'))
+  
+  const getTaskComments = (taskId) => comments.filter(c => c.task_id === taskId).sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp))
   
   return (
     <div style={styles.container}>
-      {/* Header */}
-      <div style={styles.header}>
-        <div 
-          style={styles.logo} 
-          onClick={() => setShowProjectPicker(!showProjectPicker)}
-        >
-          {project.emoji} {project.name} ▾
+      <header style={styles.header}>
+        <h1 style={styles.logo}>Mission Control</h1>
+        <div style={styles.headerMeta}>
+          <span style={styles.stat}>{tasks.length} tasks</span>
+          <span style={{ ...styles.connectionDot, background: connected ? '#10b981' : '#ef4444' }} />
+          <button style={styles.addBtn} onClick={() => setShowNewTask(true)}>+ New</button>
         </div>
-        <div style={styles.headerRight}>
-          <span style={{ color: connected ? '#00ff88' : '#ff4757', fontSize: 12 }}>
-            {connected ? '●' : '○'}
-          </span>
-          <button style={styles.addBtn} onClick={() => setShowNewTask(true)}>＋</button>
-        </div>
+      </header>
+      
+      <div className="mc-board">
+        <TaskColumn title="To Do" status="todo" tasks={todoTasks} onSelect={setSelectedTask} 
+          onDragStart={setDraggedTask} onDrop={handleDrop} isDragging={!!draggedTask} />
+        <TaskColumn title="In Progress" status="in-progress" tasks={inProgressTasks} highlight onSelect={setSelectedTask}
+          onDragStart={setDraggedTask} onDrop={handleDrop} isDragging={!!draggedTask} />
+        <TaskColumn title="Done" status="completed" tasks={completedTasks} onSelect={setSelectedTask}
+          onDragStart={setDraggedTask} onDrop={handleDrop} isDragging={!!draggedTask} />
       </div>
       
-      {/* Project Picker */}
-      {showProjectPicker && (
-        <div style={styles.picker}>
-          {Object.entries(PROJECTS).map(([key, proj]) => (
-            <div 
-              key={key}
-              style={{
-                ...styles.pickerItem,
-                background: key === currentProject ? '#333' : 'transparent'
-              }}
-              onClick={() => {
-                setCurrentProject(key)
-                setShowProjectPicker(false)
-              }}
-            >
-              {proj.emoji} {proj.name}
-            </div>
-          ))}
-          <div style={styles.pickerDivider} />
-          <div style={styles.pickerItem}>
-            ➕ Add Project...
-          </div>
-        </div>
-      )}
+      {showNewTask && <NewTaskModal onClose={() => setShowNewTask(false)} onCreate={createTask} />}
       
-      {/* New Task Modal */}
-      {showNewTask && (
-        <NewTaskModal 
-          onClose={() => setShowNewTask(false)}
-          onCreate={createTask}
+      {selectedTask && (
+        <TaskDetailModal 
+          task={selectedTask} 
+          comments={getTaskComments(selectedTask.id)}
+          agents={agents}
+          onClose={() => setSelectedTask(null)}
+          onUpdate={updateTask}
+          onComment={addComment}
         />
       )}
-      
-      {/* Stats */}
-      <div style={styles.stats}>
-        <span>📋 {tasks.length}</span>
-        <span>👥 {agents.length}</span>
-        <span>⏳ {todoTasks.length}</span>
-        <span>🔄 {inProgressTasks.length}</span>
-        <span>✅ {completedTasks.length}</span>
+    </div>
+  )
+}
+
+function TaskColumn({ title, status, tasks, highlight, onSelect, onDragStart, onDrop, isDragging }) {
+  const [dragOver, setDragOver] = useState(false)
+  
+  const handleDragOver = (e) => { e.preventDefault(); setDragOver(true) }
+  const handleDragLeave = () => setDragOver(false)
+  const handleDrop = (e) => {
+    e.preventDefault()
+    const taskId = e.dataTransfer.getData('taskId')
+    if (taskId) onDrop(taskId, status)
+    setDragOver(false)
+  }
+  
+  return (
+    <div className="mc-column" 
+      onDragOver={handleDragOver} 
+      onDragLeave={handleDragLeave} 
+      onDrop={handleDrop}
+      style={dragOver ? { background: '#1a1a1a' } : {}}
+    >
+      <div style={styles.columnHeader}>
+        <span style={styles.columnTitle}>{title}</span>
+        <span style={{ ...styles.columnCount, ...(highlight && tasks.length > 0 ? styles.columnCountHighlight : {}) }}>{tasks.length}</span>
       </div>
-      
-      {/* Columns */}
-      <div style={styles.columns}>
-        <TaskColumn 
-          title="📋 TODO" 
-          tasks={todoTasks} 
-          color="#ffd93d"
-          agents={agents}
-          onStatusChange={updateTaskStatus}
-          onComment={addComment}
-        />
-        <TaskColumn 
-          title="🔄 IN PROGRESS" 
-          tasks={inProgressTasks} 
-          color="#4ecdc4"
-          agents={agents}
-          onStatusChange={updateTaskStatus}
-          onComment={addComment}
-        />
-        <TaskColumn 
-          title="✅ DONE" 
-          tasks={completedTasks} 
-          color="#00ff88"
-          agents={agents}
-          onStatusChange={updateTaskStatus}
-          onComment={addComment}
-        />
+      <div style={styles.columnBody}>
+        {tasks.map(task => (
+          <TaskCard key={task.id} task={task} onSelect={onSelect} onDragStart={onDragStart} />
+        ))}
+        {tasks.length === 0 && <p style={styles.emptyText}>{isDragging ? 'Drop here' : 'No tasks'}</p>}
+      </div>
+    </div>
+  )
+}
+
+function TaskCard({ task, onSelect, onDragStart }) {
+  const priority = PRIORITIES.find(p => p.value === task.priority)
+  
+  const handleDragStart = (e) => {
+    e.dataTransfer.setData('taskId', task.id)
+    onDragStart(task)
+  }
+  
+  return (
+    <div 
+      className="mc-card" 
+      style={styles.card} 
+      onClick={() => onSelect(task)}
+      draggable
+      onDragStart={handleDragStart}
+      onDragEnd={() => onDragStart(null)}
+    >
+      <div style={styles.cardTop}>
+        {priority && <span style={{ ...styles.priorityDot, background: priority.color }} title={priority.label} />}
+        <p style={styles.cardTitle}>{task.title}</p>
+      </div>
+      <div style={styles.cardMeta}>
+        {task.assignee && <span style={styles.cardAssignee}>@{task.assignee}</span>}
+        {task.tags?.length > 0 && task.tags.map(tag => (
+          <span key={tag} style={styles.cardTag}>{tag}</span>
+        ))}
       </div>
     </div>
   )
@@ -235,30 +205,27 @@ export default function MissionControlSync() {
 
 function NewTaskModal({ onClose, onCreate }) {
   const [title, setTitle] = useState('')
-  
-  const handleSubmit = (e) => {
-    e.preventDefault()
-    if (title.trim()) {
-      onCreate(title.trim())
-    }
-  }
+  const [priority, setPriority] = useState('p2')
+  const inputRef = useRef(null)
+  useEffect(() => { inputRef.current?.focus() }, [])
   
   return (
     <div style={styles.modalOverlay} onClick={onClose}>
-      <div style={styles.modal} onClick={e => e.stopPropagation()}>
-        <h3 style={{ margin: '0 0 16px', color: '#4ecdc4' }}>New Task</h3>
-        <form onSubmit={handleSubmit}>
-          <input
-            type="text"
-            placeholder="Task title..."
-            value={title}
-            onChange={e => setTitle(e.target.value)}
-            style={styles.input}
-            autoFocus
-          />
-          <div style={styles.modalButtons}>
-            <button type="button" style={styles.btnCancel} onClick={onClose}>Cancel</button>
-            <button type="submit" style={styles.btnCreate}>Create</button>
+      <div style={styles.smallModal} onClick={e => e.stopPropagation()}>
+        <h2 style={styles.modalTitle}>New Task</h2>
+        <form onSubmit={(e) => { e.preventDefault(); if (title.trim()) onCreate(title.trim(), priority) }}>
+          <input ref={inputRef} type="text" placeholder="Task title..." value={title}
+            onChange={e => setTitle(e.target.value)} style={styles.input} />
+          <div style={styles.priorityPicker}>
+            {PRIORITIES.map(p => (
+              <button key={p.value} type="button"
+                style={{ ...styles.priorityBtn, ...(priority === p.value ? { background: p.color, color: '#fff' } : {}) }}
+                onClick={() => setPriority(p.value)}>{p.label}</button>
+            ))}
+          </div>
+          <div style={styles.modalActions}>
+            <button type="button" style={styles.btnSecondary} onClick={onClose}>Cancel</button>
+            <button type="submit" style={styles.btnPrimary}>Create</button>
           </div>
         </form>
       </div>
@@ -266,45 +233,37 @@ function NewTaskModal({ onClose, onCreate }) {
   )
 }
 
-function TaskColumn({ title, tasks, color, agents, onStatusChange, onComment }) {
-  return (
-    <div style={styles.column}>
-      <div style={{ ...styles.columnHeader, borderColor: color, color }}>
-        {title} ({tasks.length})
-      </div>
-      <div style={styles.taskList}>
-        {tasks.length === 0 && (
-          <div style={styles.emptyColumn}>No tasks</div>
-        )}
-        {tasks.map(task => (
-          <TaskCard 
-            key={task.id} 
-            task={task} 
-            color={color}
-            agents={agents}
-            onStatusChange={onStatusChange}
-            onComment={onComment}
-          />
-        ))}
-      </div>
-    </div>
-  )
-}
-
-function TaskCard({ task, color, agents, onStatusChange, onComment }) {
-  const [expanded, setExpanded] = useState(false)
-  const [showComment, setShowComment] = useState(false)
+function TaskDetailModal({ task, comments, agents, onClose, onUpdate, onComment }) {
   const [commentText, setCommentText] = useState('')
+  const [showMentions, setShowMentions] = useState(false)
+  const [mentionFilter, setMentionFilter] = useState('')
+  const [newTag, setNewTag] = useState('')
+  const inputRef = useRef(null)
   
-  const statusCycle = {
-    'todo': 'in-progress',
-    'in-progress': 'completed',
-    'completed': 'todo'
+  const statusCycle = { 'todo': 'in-progress', 'in-progress': 'completed', 'completed': 'todo' }
+  const statusLabels = { 'todo': 'To Do', 'in-progress': 'In Progress', 'completed': 'Done' }
+  const currentPriority = PRIORITIES.find(p => p.value === task.priority) || PRIORITIES[2]
+  
+  const handleCommentChange = (e) => {
+    const val = e.target.value
+    setCommentText(val)
+    
+    // Check for @ mentions
+    const lastAt = val.lastIndexOf('@')
+    if (lastAt !== -1 && lastAt === val.length - 1 || (lastAt !== -1 && !val.substring(lastAt).includes(' '))) {
+      setShowMentions(true)
+      setMentionFilter(val.substring(lastAt + 1).toLowerCase())
+    } else {
+      setShowMentions(false)
+    }
   }
   
-  const handleStatusChange = (e) => {
-    e.stopPropagation()
-    onStatusChange(task.id, statusCycle[task.status])
+  const insertMention = (agentName) => {
+    const lastAt = commentText.lastIndexOf('@')
+    const newText = commentText.substring(0, lastAt) + '@' + agentName + ' '
+    setCommentText(newText)
+    setShowMentions(false)
+    inputRef.current?.focus()
   }
   
   const handleComment = (e) => {
@@ -312,326 +271,225 @@ function TaskCard({ task, color, agents, onStatusChange, onComment }) {
     if (commentText.trim()) {
       onComment(task.id, commentText.trim())
       setCommentText('')
-      setShowComment(false)
     }
   }
   
+  const addTag = () => {
+    if (newTag.trim() && !task.tags?.includes(newTag.trim())) {
+      onUpdate(task.id, { tags: [...(task.tags || []), newTag.trim().toLowerCase()] })
+      setNewTag('')
+    }
+  }
+  
+  const removeTag = (tag) => {
+    onUpdate(task.id, { tags: (task.tags || []).filter(t => t !== tag) })
+  }
+  
+  const filteredAgents = agents.filter(a => a.name.toLowerCase().includes(mentionFilter))
+  
+  const formatTime = (ts) => {
+    const d = new Date(ts), now = new Date(), diff = now - d
+    if (diff < 60000) return 'just now'
+    if (diff < 3600000) return `${Math.floor(diff/60000)}m ago`
+    if (diff < 86400000) return `${Math.floor(diff/3600000)}h ago`
+    return d.toLocaleDateString()
+  }
+  
   return (
-    <div style={{ ...styles.card, borderColor: color }}>
-      <div style={styles.cardHeader} onClick={() => setExpanded(!expanded)}>
-        <div style={styles.cardTitle}>{task.title}</div>
-        <button style={styles.statusBtn} onClick={handleStatusChange}>
-          {task.status === 'todo' ? '▶' : task.status === 'in-progress' ? '✓' : '↺'}
-        </button>
-      </div>
-      
-      {task.assignee && (
-        <div style={styles.assignee}>@{task.assignee}</div>
-      )}
-      
-      {expanded && (
-        <div style={styles.cardDetails}>
-          {task.description && (
-            <div style={styles.cardDesc}>{task.description}</div>
-          )}
-          <div style={styles.cardMeta}>{task.type} • {task.id}</div>
+    <div style={styles.modalOverlay} onClick={onClose}>
+      <div style={styles.fullModal} onClick={e => e.stopPropagation()}>
+        <header style={styles.detailHeader}>
+          <button style={styles.closeBtn} onClick={onClose}>✕</button>
+          <span style={styles.taskId}>{task.id}</span>
+        </header>
+        
+        <div style={styles.detailContent}>
+          <h1 style={styles.detailTitle}>{task.title}</h1>
           
-          {/* Comments */}
-          {task.comments && task.comments.length > 0 && (
-            <div style={styles.comments}>
-              {task.comments.map(c => (
-                <div key={c.id} style={styles.comment}>
-                  <span style={styles.commentAuthor}>@{c.agent}</span>: {c.text}
-                </div>
+          <div style={styles.controlsRow}>
+            <button style={{ ...styles.statusBadge, ...(task.status === 'in-progress' ? styles.statusBadgeActive : {}) }}
+              onClick={() => onUpdate(task.id, { status: statusCycle[task.status] })}>
+              {statusLabels[task.status]} →
+            </button>
+            
+            <div style={styles.priorityPicker}>
+              {PRIORITIES.map(p => (
+                <button key={p.value} type="button"
+                  style={{ ...styles.priorityBtnSmall, ...(task.priority === p.value ? { background: p.color, color: '#fff' } : {}) }}
+                  onClick={() => onUpdate(task.id, { priority: p.value })}>{p.label}</button>
               ))}
+            </div>
+            
+            {task.assignee && <span style={styles.detailAssignee}>@{task.assignee}</span>}
+          </div>
+          
+          {/* Tags */}
+          <div style={styles.tagsSection}>
+            {(task.tags || []).map(tag => (
+              <span key={tag} style={styles.tag}>
+                {tag}
+                <button style={styles.tagRemove} onClick={() => removeTag(tag)}>×</button>
+              </span>
+            ))}
+            <div style={styles.addTagWrapper}>
+              <input type="text" placeholder="Add tag..." value={newTag} 
+                onChange={e => setNewTag(e.target.value)}
+                onKeyDown={e => e.key === 'Enter' && (e.preventDefault(), addTag())}
+                style={styles.tagInput} />
+            </div>
+          </div>
+          
+          {task.description && (
+            <div style={styles.descriptionSection}>
+              <Markdown components={{
+                p: ({children}) => <p style={styles.mdP}>{children}</p>,
+                a: ({href, children}) => <a href={href} style={styles.mdLink} target="_blank" rel="noopener noreferrer">{children}</a>,
+                code: ({children}) => <code style={styles.mdCode}>{children}</code>,
+                pre: ({children}) => <pre style={styles.mdPre}>{children}</pre>,
+                ul: ({children}) => <ul style={styles.mdList}>{children}</ul>,
+                ol: ({children}) => <ol style={styles.mdList}>{children}</ol>,
+                li: ({children}) => <li style={styles.mdLi}>{children}</li>,
+                strong: ({children}) => <strong style={styles.mdStrong}>{children}</strong>,
+              }}>
+                {task.description}
+              </Markdown>
             </div>
           )}
           
-          {/* Add comment */}
-          {showComment ? (
+          <div style={styles.commentsSection}>
+            <h3 style={styles.sectionTitle}>Comments {comments.length > 0 && `(${comments.length})`}</h3>
+            
+            {comments.map(c => (
+              <div key={c.id} style={styles.comment}>
+                <div style={styles.commentHeader}>
+                  <span style={styles.commentAuthor}>@{c.agent}</span>
+                  <span style={styles.commentTime}>{formatTime(c.timestamp)}</span>
+                </div>
+                <div style={styles.commentBody}>{c.content}</div>
+              </div>
+            ))}
+            
             <form onSubmit={handleComment} style={styles.commentForm}>
-              <input
-                type="text"
-                placeholder="Add comment... (use @agent to mention)"
-                value={commentText}
-                onChange={e => setCommentText(e.target.value)}
-                style={styles.commentInput}
-                autoFocus
-              />
-              <button type="submit" style={styles.commentBtn}>Send</button>
+              <div style={styles.commentInputWrapper}>
+                <input ref={inputRef} type="text" placeholder="Add a comment... (@ to mention)"
+                  value={commentText} onChange={handleCommentChange} style={styles.commentInput} />
+                {showMentions && filteredAgents.length > 0 && (
+                  <div style={styles.mentionDropdown}>
+                    {filteredAgents.map(a => (
+                      <div key={a.name} style={styles.mentionItem} onClick={() => insertMention(a.name)}>
+                        @{a.name} <span style={styles.mentionRole}>{a.role}</span>
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+              <button type="submit" style={styles.btnPrimary} disabled={!commentText.trim()}>Send</button>
             </form>
-          ) : (
-            <button 
-              style={styles.addCommentBtn} 
-              onClick={(e) => { e.stopPropagation(); setShowComment(true) }}
-            >
-              💬 Comment
-            </button>
-          )}
+          </div>
         </div>
-      )}
+      </div>
     </div>
   )
 }
 
 const styles = {
-  container: {
-    minHeight: '100vh',
-    background: '#1a1a1a',
-    color: 'white',
-    fontFamily: '-apple-system, BlinkMacSystemFont, sans-serif',
-    paddingBottom: 40,
-  },
-  centered: {
-    display: 'flex',
-    flexDirection: 'column',
-    alignItems: 'center',
-    justifyContent: 'center',
-    height: '100vh',
-    background: '#1a1a1a',
-    color: 'white',
-  },
-  header: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    padding: '12px 16px',
-    borderBottom: '1px solid #333',
-    position: 'sticky',
-    top: 0,
-    background: '#1a1a1a',
-    zIndex: 100,
-  },
-  logo: {
-    fontSize: 16,
-    fontWeight: 600,
-    color: '#4ecdc4',
-    cursor: 'pointer',
-  },
-  headerRight: {
-    display: 'flex',
-    alignItems: 'center',
-    gap: 12,
-  },
-  addBtn: {
-    background: '#4ecdc4',
-    color: '#1a1a1a',
-    border: 'none',
-    borderRadius: 6,
-    width: 32,
-    height: 32,
-    fontSize: 20,
-    fontWeight: 600,
-    cursor: 'pointer',
-  },
-  picker: {
-    position: 'absolute',
-    top: 50,
-    left: 16,
-    background: '#2a2a2a',
-    border: '1px solid #444',
-    borderRadius: 8,
-    padding: 8,
-    zIndex: 200,
-    minWidth: 200,
-  },
-  pickerItem: {
-    padding: '10px 12px',
-    borderRadius: 4,
-    cursor: 'pointer',
-  },
-  pickerDivider: {
-    height: 1,
-    background: '#444',
-    margin: '8px 0',
-  },
-  stats: {
-    display: 'flex',
-    gap: 16,
-    padding: '8px 16px',
-    fontSize: 13,
-    borderBottom: '1px solid #333',
-    background: '#222',
-    overflowX: 'auto',
-  },
-  columns: {
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 16,
-    padding: 16,
-  },
-  column: {
-    background: '#222',
-    borderRadius: 8,
-    overflow: 'hidden',
-  },
-  columnHeader: {
-    padding: '10px 12px',
-    fontWeight: 600,
-    fontSize: 14,
-    borderLeft: '3px solid',
-    background: '#2a2a2a',
-  },
-  taskList: {
-    padding: 8,
-    display: 'flex',
-    flexDirection: 'column',
-    gap: 8,
-  },
-  emptyColumn: {
-    padding: 16,
-    textAlign: 'center',
-    color: '#666',
-    fontSize: 13,
-  },
-  card: {
-    background: '#1a1a1a',
-    border: '1px solid',
-    borderRadius: 6,
-    padding: 12,
-  },
-  cardHeader: {
-    display: 'flex',
-    justifyContent: 'space-between',
-    alignItems: 'flex-start',
-    cursor: 'pointer',
-  },
-  cardTitle: {
-    fontWeight: 500,
-    fontSize: 14,
-    flex: 1,
-    paddingRight: 8,
-  },
-  statusBtn: {
-    background: '#333',
-    border: 'none',
-    borderRadius: 4,
-    color: 'white',
-    width: 28,
-    height: 28,
-    fontSize: 14,
-    cursor: 'pointer',
-  },
-  assignee: {
-    fontSize: 12,
-    color: '#4ecdc4',
-    marginTop: 4,
-  },
-  cardDetails: {
-    marginTop: 12,
-    paddingTop: 12,
-    borderTop: '1px solid #333',
-  },
-  cardDesc: {
-    fontSize: 13,
-    color: '#999',
-    marginBottom: 8,
-    lineHeight: 1.4,
-  },
-  cardMeta: {
-    fontSize: 11,
-    color: '#666',
-    marginBottom: 8,
-  },
-  comments: {
-    marginTop: 8,
-    padding: 8,
-    background: '#252525',
-    borderRadius: 4,
-  },
-  comment: {
-    fontSize: 12,
-    color: '#ccc',
-    marginBottom: 4,
-  },
-  commentAuthor: {
-    color: '#4ecdc4',
-    fontWeight: 500,
-  },
-  commentForm: {
-    display: 'flex',
-    gap: 8,
-    marginTop: 8,
-  },
-  commentInput: {
-    flex: 1,
-    background: '#333',
-    border: '1px solid #444',
-    borderRadius: 4,
-    padding: '8px 10px',
-    color: 'white',
-    fontSize: 13,
-  },
-  commentBtn: {
-    background: '#4ecdc4',
-    color: '#1a1a1a',
-    border: 'none',
-    borderRadius: 4,
-    padding: '8px 12px',
-    fontWeight: 500,
-    cursor: 'pointer',
-  },
-  addCommentBtn: {
-    background: 'transparent',
-    border: '1px solid #444',
-    borderRadius: 4,
-    padding: '6px 10px',
-    color: '#888',
-    fontSize: 12,
-    cursor: 'pointer',
-    marginTop: 8,
-  },
-  modalOverlay: {
-    position: 'fixed',
-    top: 0,
-    left: 0,
-    right: 0,
-    bottom: 0,
-    background: 'rgba(0,0,0,0.8)',
-    display: 'flex',
-    alignItems: 'center',
-    justifyContent: 'center',
-    zIndex: 1000,
-    padding: 20,
-  },
-  modal: {
-    background: '#2a2a2a',
-    borderRadius: 12,
-    padding: 20,
-    width: '100%',
-    maxWidth: 400,
-  },
-  input: {
-    width: '100%',
-    background: '#1a1a1a',
-    border: '1px solid #444',
-    borderRadius: 6,
-    padding: '12px 14px',
-    color: 'white',
-    fontSize: 15,
-    boxSizing: 'border-box',
-  },
-  modalButtons: {
-    display: 'flex',
-    gap: 12,
-    marginTop: 16,
-    justifyContent: 'flex-end',
-  },
-  btnCancel: {
-    background: 'transparent',
-    border: '1px solid #444',
-    borderRadius: 6,
-    padding: '10px 16px',
-    color: '#888',
-    cursor: 'pointer',
-  },
-  btnCreate: {
-    background: '#4ecdc4',
-    border: 'none',
-    borderRadius: 6,
-    padding: '10px 20px',
-    color: '#1a1a1a',
-    fontWeight: 600,
-    cursor: 'pointer',
-  },
+  container: { minHeight: '100vh', background: '#0a0a0a', color: '#e5e5e5', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', overflowX: 'hidden', overflowY: 'auto', WebkitOverflowScrolling: 'touch' },
+  centered: { display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100vh', background: '#0a0a0a' },
+  spinner: { width: 24, height: 24, border: '2px solid #333', borderTopColor: '#e5e5e5', borderRadius: '50%', animation: 'spin 1s linear infinite' },
+  loadingText: { color: '#666', marginTop: 12, fontSize: 14 },
+  
+  header: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 20px', borderBottom: '1px solid #1a1a1a', position: 'sticky', top: 0, background: '#0a0a0a', zIndex: 50 },
+  logo: { fontSize: 18, fontWeight: 600, color: '#fff', margin: 0 },
+  headerMeta: { display: 'flex', alignItems: 'center', gap: 16 },
+  stat: { fontSize: 13, color: '#666' },
+  connectionDot: { width: 8, height: 8, borderRadius: '50%' },
+  addBtn: { background: '#fff', color: '#0a0a0a', border: 'none', borderRadius: 6, padding: '8px 14px', fontSize: 13, fontWeight: 500, cursor: 'pointer' },
+  
+  columnHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 20px', borderBottom: '1px solid #1a1a1a' },
+  columnTitle: { fontSize: 13, fontWeight: 500, color: '#888', textTransform: 'uppercase', letterSpacing: '0.05em' },
+  columnCount: { fontSize: 12, color: '#444', background: '#1a1a1a', padding: '2px 8px', borderRadius: 10 },
+  columnCountHighlight: { color: '#fff', background: '#10b981' },
+  columnBody: { padding: '8px 12px', minHeight: 100 },
+  
+  card: { background: '#111', border: '1px solid #1a1a1a', borderRadius: 8, padding: '12px 14px', marginBottom: 8, cursor: 'grab', transition: 'border-color 0.15s' },
+  cardTop: { display: 'flex', alignItems: 'flex-start', gap: 8 },
+  priorityDot: { width: 8, height: 8, borderRadius: '50%', marginTop: 5, flexShrink: 0 },
+  cardTitle: { fontSize: 14, fontWeight: 400, color: '#e5e5e5', margin: 0, lineHeight: 1.4 },
+  cardMeta: { display: 'flex', flexWrap: 'wrap', gap: 6, marginTop: 8 },
+  cardAssignee: { fontSize: 12, color: '#10b981' },
+  cardTag: { fontSize: 11, color: '#888', background: '#1a1a1a', padding: '2px 6px', borderRadius: 4 },
+  emptyText: { fontSize: 13, color: '#444', textAlign: 'center', padding: 20 },
+  
+  modalOverlay: { position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.9)', display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 1000 },
+  smallModal: { background: '#111', border: '1px solid #222', borderRadius: 12, padding: 24, width: '100%', maxWidth: 400, margin: 20 },
+  fullModal: { background: '#0a0a0a', borderRadius: 12, width: '100%', height: '100%', maxWidth: 800, maxHeight: '90vh', overflow: 'hidden', display: 'flex', flexDirection: 'column', border: '1px solid #1a1a1a', margin: 20 },
+  
+  modalTitle: { fontSize: 18, fontWeight: 600, color: '#fff', margin: '0 0 20px' },
+  input: { width: '100%', background: '#0a0a0a', border: '1px solid #222', borderRadius: 8, padding: '12px 14px', color: '#e5e5e5', fontSize: 15, boxSizing: 'border-box', outline: 'none' },
+  priorityPicker: { display: 'flex', gap: 8, margin: '16px 0' },
+  priorityBtn: { background: '#1a1a1a', border: '1px solid #333', color: '#888', borderRadius: 6, padding: '8px 14px', fontSize: 13, cursor: 'pointer' },
+  priorityBtnSmall: { background: '#1a1a1a', border: '1px solid #333', color: '#888', borderRadius: 4, padding: '4px 10px', fontSize: 12, cursor: 'pointer' },
+  modalActions: { display: 'flex', gap: 12, marginTop: 20, justifyContent: 'flex-end' },
+  btnPrimary: { background: '#fff', color: '#0a0a0a', border: 'none', borderRadius: 6, padding: '10px 18px', fontSize: 14, fontWeight: 500, cursor: 'pointer' },
+  btnSecondary: { background: 'transparent', color: '#888', border: '1px solid #333', borderRadius: 6, padding: '10px 18px', fontSize: 14, cursor: 'pointer' },
+  
+  detailHeader: { display: 'flex', alignItems: 'center', justifyContent: 'space-between', padding: '16px 20px', borderBottom: '1px solid #1a1a1a' },
+  closeBtn: { background: 'transparent', border: 'none', color: '#666', fontSize: 20, cursor: 'pointer', padding: '4px 8px' },
+  taskId: { fontSize: 12, color: '#444', fontFamily: 'monospace' },
+  detailContent: { flex: 1, overflow: 'auto', padding: 24 },
+  detailTitle: { fontSize: 24, fontWeight: 600, color: '#fff', margin: '0 0 16px', lineHeight: 1.3 },
+  controlsRow: { display: 'flex', alignItems: 'center', gap: 12, marginBottom: 16, flexWrap: 'wrap' },
+  statusBadge: { background: '#1a1a1a', border: '1px solid #333', color: '#888', borderRadius: 6, padding: '6px 12px', fontSize: 13, cursor: 'pointer' },
+  statusBadgeActive: { background: '#10b981', borderColor: '#10b981', color: '#fff' },
+  detailAssignee: { fontSize: 14, color: '#10b981' },
+  
+  tagsSection: { display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 20, alignItems: 'center' },
+  tag: { fontSize: 12, color: '#ccc', background: '#1a1a1a', padding: '4px 10px', borderRadius: 4, display: 'flex', alignItems: 'center', gap: 6 },
+  tagRemove: { background: 'transparent', border: 'none', color: '#666', cursor: 'pointer', fontSize: 14, padding: 0 },
+  addTagWrapper: { display: 'flex' },
+  tagInput: { background: 'transparent', border: '1px dashed #333', borderRadius: 4, padding: '4px 10px', color: '#888', fontSize: 12, width: 80, outline: 'none' },
+  
+  descriptionSection: { background: '#111', border: '1px solid #1a1a1a', borderRadius: 8, padding: 20, marginBottom: 24 },
+  mdP: { margin: '0 0 12px', lineHeight: 1.6, color: '#ccc' },
+  mdLink: { color: '#10b981', textDecoration: 'none' },
+  mdCode: { background: '#1a1a1a', padding: '2px 6px', borderRadius: 4, fontSize: 13, fontFamily: 'monospace' },
+  mdPre: { background: '#1a1a1a', padding: 16, borderRadius: 8, overflow: 'auto', margin: '12px 0' },
+  mdList: { margin: '12px 0', paddingLeft: 24, color: '#ccc' },
+  mdLi: { marginBottom: 6, lineHeight: 1.5 },
+  mdStrong: { color: '#fff', fontWeight: 600 },
+  
+  commentsSection: { marginTop: 24 },
+  sectionTitle: { fontSize: 14, fontWeight: 500, color: '#888', textTransform: 'uppercase', letterSpacing: '0.05em', margin: '0 0 16px' },
+  comment: { background: '#111', border: '1px solid #1a1a1a', borderRadius: 8, padding: 16, marginBottom: 12 },
+  commentHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
+  commentAuthor: { fontSize: 13, fontWeight: 500, color: '#10b981' },
+  commentTime: { fontSize: 12, color: '#444' },
+  commentBody: { fontSize: 14, color: '#ccc', lineHeight: 1.5 },
+  commentForm: { display: 'flex', gap: 12, marginTop: 16 },
+  commentInputWrapper: { flex: 1, position: 'relative' },
+  commentInput: { width: '100%', background: '#111', border: '1px solid #222', borderRadius: 8, padding: '12px 14px', color: '#e5e5e5', fontSize: 14, outline: 'none', boxSizing: 'border-box' },
+  mentionDropdown: { position: 'absolute', bottom: '100%', left: 0, right: 0, background: '#111', border: '1px solid #333', borderRadius: 8, marginBottom: 4, maxHeight: 200, overflow: 'auto' },
+  mentionItem: { padding: '10px 14px', cursor: 'pointer', fontSize: 14, color: '#e5e5e5' },
+  mentionRole: { color: '#666', marginLeft: 8, fontSize: 12 },
+}
+
+// Global styles
+if (!document.getElementById('mc-styles')) {
+  const styleSheet = document.createElement('style')
+  styleSheet.id = 'mc-styles'
+  styleSheet.textContent = `
+    @keyframes spin { to { transform: rotate(360deg); } }
+    html, body { height: 100%; overflow: auto; -webkit-overflow-scrolling: touch; }
+    .mc-board { display: flex; flex-direction: column; }
+    .mc-column { flex: 1; min-width: 0; border-bottom: 1px solid #1a1a1a; }
+    @media (min-width: 768px) {
+      .mc-board { flex-direction: row; height: calc(100vh - 60px); }
+      .mc-column { border-bottom: none; border-right: 1px solid #1a1a1a; overflow-y: auto; }
+      .mc-column:last-child { border-right: none; }
+    }
+    .mc-card:hover { border-color: #333; }
+    .mc-card:active { cursor: grabbing; }
+    input::placeholder { color: #444; }
+  `
+  document.head.appendChild(styleSheet)
 }

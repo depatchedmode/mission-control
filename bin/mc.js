@@ -97,6 +97,25 @@ async function main() {
   const store = new AutomergeStore();
   await store.init();
 
+  // Helper: try to use sync server API first (ensures consistency)
+  async function addCommentViaAPI(taskId, text, agent) {
+    try {
+      const res = await fetch('http://localhost:8004/automerge/comment', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ taskId, text, agent })
+      });
+      if (res.ok) {
+        const data = await res.json();
+        return { success: true, commentId: data.commentId, via: 'api' };
+      }
+    } catch (e) {
+      // Server not running, fall back to direct store
+    }
+    const commentId = await store.addComment(taskId, text, agent);
+    return { success: true, commentId, via: 'store' };
+  }
+
   try {
     // ─────────────────────────────────────────
     // mc comment <task-id> "message"
@@ -111,8 +130,8 @@ async function main() {
         process.exit(1);
       }
       
-      const commentId = await store.addComment(taskId, message, agent);
-      console.log(`✅ Comment added: ${commentId}`);
+      const result = await addCommentViaAPI(taskId, message, agent);
+      console.log(`✅ Comment added: ${result.commentId} (via ${result.via})`);
       
       // Check for mentions in the message
       const mentions = message.match(/@(\w+)/g) || [];
