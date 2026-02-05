@@ -479,46 +479,53 @@ async function main() {
         process.exit(1);
       }
       
-      // Need store for history tracking
-      const store = await getStore();
-      const history = await store.getTaskHistory(taskId);
-      
-      if (!history || history.length === 0) {
-        console.log(`No history found for task ${taskId}`);
-      } else {
-        console.log(`\n📜 History for ${taskId}`);
-        console.log('─'.repeat(50));
+      // Use HTTP API for history
+      try {
+        const data = await apiGet(`/automerge/task/${taskId}/history`);
+        const history = data.history || [];
         
-        for (const change of history) {
-          console.log(`\n${formatTime(change.timestamp)} ${change.agent ? `@${change.agent}` : ''}`);
+        if (history.length === 0) {
+          console.log(`No history found for task ${taskId}`);
+        } else {
+          console.log(`\n📜 History for ${taskId}`);
+          console.log('─'.repeat(50));
           
-          for (const diff of change.changes) {
-            if (diff.field === 'status') {
-              console.log(`  Status: ${diff.old || '(none)'} → ${diff.new}`);
-            } else if (diff.field === 'assignee') {
-              console.log(`  Assignee: ${diff.old || 'unassigned'} → ${diff.new || 'unassigned'}`);
-            } else if (diff.field === 'title') {
-              console.log(`  Title changed`);
-            } else if (diff.field === 'description') {
-              console.log(`  Description updated`);
-            } else {
-              console.log(`  ${diff.field}: ${diff.old || '(none)'} → ${diff.new}`);
+          for (const change of history) {
+            console.log(`\n${formatTime(change.timestamp)} ${change.agent ? `@${change.agent}` : ''}`);
+            
+            for (const diff of change.changes) {
+              if (diff.field === 'status') {
+                console.log(`  Status: ${diff.old || '(none)'} → ${diff.new}`);
+              } else if (diff.field === 'assignee') {
+                console.log(`  Assignee: ${diff.old || 'unassigned'} → ${diff.new || 'unassigned'}`);
+              } else if (diff.field === 'title') {
+                const oldTitle = diff.old ? `"${diff.old}"` : '(none)';
+                const newTitle = diff.new ? `"${diff.new}"` : '(none)';
+                console.log(`  Title: ${oldTitle} → ${newTitle}`);
+              } else if (diff.field === 'description') {
+                console.log(`  Description updated`);
+              } else {
+                console.log(`  ${diff.field}: ${diff.old || '(none)'} → ${diff.new}`);
+              }
             }
           }
+          console.log();
         }
-        console.log();
+      } catch (e) {
+        console.error(`❌ Failed to get history: ${e.message}`);
+        process.exit(1);
       }
     }
 
     // ─────────────────────────────────────────
-    // mc update <task-id> [--status <s>] [--assignee <name>] [--title "text"]
+    // mc update <task-id> [--status <s>] [--assignee <name>] [--title "text"] [--priority <p>]
     // ─────────────────────────────────────────
     else if (command === 'update') {
       const taskId = args[1];
       const agent = getArg('agent', process.env.MC_AGENT || 'unknown');
       
       if (!taskId) {
-        console.error('Usage: mc update <task-id> [--status <s>] [--assignee <name>] [--title "text"]');
+        console.error('Usage: mc update <task-id> [--status <s>] [--assignee <name>] [--title "text"] [--priority <p>]');
         process.exit(1);
       }
       
@@ -526,13 +533,15 @@ async function main() {
       const status = getArg('status');
       const assignee = getArg('assignee');
       const title = getArg('title');
+      const priority = getArg('priority');
       
       if (status) updates.status = status;
       if (assignee) updates.assignee = assignee;
       if (title) updates.title = title;
+      if (priority) updates.priority = priority;
       
       if (Object.keys(updates).length <= 1) { // only agent
-        console.error('No updates specified. Use --status, --assignee, or --title');
+        console.error('No updates specified. Use --status, --assignee, --title, or --priority');
         process.exit(1);
       }
       
@@ -572,16 +581,17 @@ async function main() {
         process.exit(1);
       }
       
-      const store = await getStore();
-      const branchId = await store.createBranch(taskId, branchName, agent);
-      
-      if (branchId) {
-        console.log(`🌿 Branch created: ${branchId}`);
-        console.log(`   Parent: ${taskId}`);
-        console.log(`   Name: ${branchName}`);
-        console.log(`\n   Work on the branch, then merge with: mc merge ${branchId}`);
-      } else {
-        console.error('Failed to create branch. Task not found?');
+      try {
+        const result = await apiPost(`/automerge/task/${taskId}/branch`, { branchName, agent });
+        
+        if (result.branchId) {
+          console.log(`🌿 Branch created: ${result.branchId}`);
+          console.log(`   Parent: ${taskId}`);
+          console.log(`   Name: ${branchName}`);
+          console.log(`\n   Work on the branch, then merge with: mc merge ${result.branchId}`);
+        }
+      } catch (e) {
+        console.error(`❌ Failed to create branch: ${e.message}`);
         process.exit(1);
       }
     }
@@ -596,22 +606,27 @@ async function main() {
         process.exit(1);
       }
       
-      const store = await getStore();
-      const branches = await store.getBranches(taskId);
-      
-      if (branches.length === 0) {
-        console.log(`No branches for ${taskId}`);
-      } else {
-        console.log(`\n🌿 Branches of ${taskId}:\n`);
-        for (const b of branches) {
-          const statusIcon = b.merged ? '🔀' : '🌿';
-          console.log(`  ${statusIcon} ${b.id}: ${b.branch_name}`);
-          console.log(`     Created by @${b.created_by} ${formatTime(b.created_at)}`);
-          if (b.merged) {
-            console.log(`     Merged ${formatTime(b.merged_at)}`);
+      try {
+        const data = await apiGet(`/automerge/task/${taskId}/branches`);
+        const branches = data.branches || [];
+        
+        if (branches.length === 0) {
+          console.log(`No branches for ${taskId}`);
+        } else {
+          console.log(`\n🌿 Branches of ${taskId}:\n`);
+          for (const b of branches) {
+            const statusIcon = b.merged ? '🔀' : '🌿';
+            console.log(`  ${statusIcon} ${b.id}: ${b.branch_name}`);
+            console.log(`     Created by @${b.created_by} ${formatTime(b.created_at)}`);
+            if (b.merged) {
+              console.log(`     Merged ${formatTime(b.merged_at)}`);
+            }
+            console.log();
           }
-          console.log();
         }
+      } catch (e) {
+        console.error(`❌ Failed to list branches: ${e.message}`);
+        process.exit(1);
       }
     }
 
@@ -627,15 +642,13 @@ async function main() {
         process.exit(1);
       }
       
-      const store = await getStore();
-      const result = await store.mergeBranch(branchId, agent);
-      
-      if (result.success) {
+      try {
+        const result = await apiPost(`/automerge/branch/${branchId}/merge`, { agent });
         console.log(`🔀 Branch merged successfully!`);
         console.log(`   ${branchId} → ${result.parentId}`);
         console.log(`   Changes applied to parent task`);
-      } else {
-        console.error(`Failed to merge: ${result.error}`);
+      } catch (e) {
+        console.error(`❌ Failed to merge: ${e.message}`);
         process.exit(1);
       }
     }

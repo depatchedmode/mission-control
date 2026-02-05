@@ -108,6 +108,30 @@ class AutomergeSyncServer {
         res.status(500).json({ error: error.message })
       }
     })
+
+    // Update comment (e.g., fix attribution)
+    this.app.patch('/automerge/comment/:commentId', async (req, res) => {
+      try {
+        const { commentId } = req.params
+        const updates = req.body
+        
+        const doc = this.store.getDoc()
+        if (!doc.comments?.[commentId]) {
+          return res.status(404).json({ error: 'Comment not found' })
+        }
+        
+        await this.store.docHandle.change(doc => {
+          const comment = doc.comments[commentId]
+          if (updates.agent) comment.agent = updates.agent
+          if (updates.content) comment.content = updates.content
+        })
+        
+        this.broadcastDocumentUpdate()
+        res.json({ success: true, commentId })
+      } catch (error) {
+        res.status(500).json({ error: error.message })
+      }
+    })
     
     // Register agent
     this.app.post('/automerge/agent', async (req, res) => {
@@ -215,11 +239,16 @@ class AutomergeSyncServer {
               type: 'task_updated',
               agent: agent || 'api',
               taskId,
-              changes,
+              // Detailed changes tracked in taskHistory, not here
               timestamp: new Date().toISOString()
             })
           }
         })
+        
+        // Record to taskHistory for Patchwork diff tracking
+        if (changes.length > 0) {
+          await this.store.recordTaskChange(taskId, changes, agent || 'api')
+        }
         
         this.broadcastDocumentUpdate()
         res.json({ success: true, taskId, changes })
@@ -228,6 +257,63 @@ class AutomergeSyncServer {
       }
     })
     
+    // ─── Patchwork: Task History ───
+    this.app.get('/automerge/task/:taskId/history', async (req, res) => {
+      try {
+        const { taskId } = req.params
+        const history = await this.store.getTaskHistory(taskId)
+        res.json({ history })
+      } catch (error) {
+        res.status(500).json({ error: error.message })
+      }
+    })
+
+    // ─── Patchwork: Create Branch ───
+    this.app.post('/automerge/task/:taskId/branch', async (req, res) => {
+      try {
+        const { taskId } = req.params
+        const { branchName, agent } = req.body
+        if (!branchName) {
+          return res.status(400).json({ error: 'branchName required' })
+        }
+        const branchId = await this.store.createBranch(taskId, branchName, agent || 'api')
+        if (!branchId) {
+          return res.status(404).json({ error: `Task ${taskId} not found` })
+        }
+        this.broadcastDocumentUpdate()
+        res.json({ success: true, branchId, parentId: taskId, branchName })
+      } catch (error) {
+        res.status(500).json({ error: error.message })
+      }
+    })
+
+    // ─── Patchwork: List Branches ───
+    this.app.get('/automerge/task/:taskId/branches', async (req, res) => {
+      try {
+        const { taskId } = req.params
+        const branches = await this.store.getBranches(taskId)
+        res.json({ branches })
+      } catch (error) {
+        res.status(500).json({ error: error.message })
+      }
+    })
+
+    // ─── Patchwork: Merge Branch ───
+    this.app.post('/automerge/branch/:branchId/merge', async (req, res) => {
+      try {
+        const { branchId } = req.params
+        const { agent } = req.body
+        const result = await this.store.mergeBranch(branchId, agent || 'api')
+        if (!result.success) {
+          return res.status(400).json({ error: result.error })
+        }
+        this.broadcastDocumentUpdate()
+        res.json(result)
+      } catch (error) {
+        res.status(500).json({ error: error.message })
+      }
+    })
+
     console.log('🌐 HTTP API routes configured')
   }
   
