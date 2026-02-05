@@ -133,6 +133,27 @@ class AutomergeSyncServer {
       }
     })
     
+    // Delete comment
+    this.app.delete('/automerge/comment/:commentId', async (req, res) => {
+      try {
+        const { commentId } = req.params
+        
+        const doc = this.store.getDoc()
+        if (!doc.comments?.[commentId]) {
+          return res.status(404).json({ error: 'Comment not found' })
+        }
+        
+        await this.store.docHandle.change(doc => {
+          delete doc.comments[commentId]
+        })
+        
+        this.broadcastDocumentUpdate()
+        res.json({ success: true, commentId })
+      } catch (error) {
+        res.status(500).json({ error: error.message })
+      }
+    })
+    
     // Register agent
     this.app.post('/automerge/agent', async (req, res) => {
       try {

@@ -92,7 +92,8 @@ Mission Control CLI
 
 Usage:
   mc comment <task-id> "message"           Add a comment (use @name to mention)
-  mc comments <task-id>                    List comments for a task
+  mc comments <task-id>                    List comments for a task (shows IDs)
+  mc comment-delete <comment-id>           Delete a comment by ID
   mc mentions <agent>                      List pending @mentions for agent
   mc mentions pending [--agent <name>]     (legacy) List pending @mentions
   mc activity [--limit <n>]                Show activity feed
@@ -213,10 +214,30 @@ async function main() {
       } else {
         console.log(`\nComments for ${taskId}:\n`);
         for (const c of comments) {
-          console.log(`[@${c.agent}] ${formatTime(c.timestamp)}`);
+          console.log(`[@${c.agent}] ${formatTime(c.timestamp)} [${c.id}]`);
           console.log(`  ${c.content}`);
           console.log();
         }
+      }
+    }
+
+    // ─────────────────────────────────────────
+    // mc comment-delete <comment-id>
+    // ─────────────────────────────────────────
+    else if (command === 'comment-delete') {
+      const commentId = args[1];
+      if (!commentId) {
+        console.error('Usage: mc comment-delete <comment-id>');
+        process.exit(1);
+      }
+      
+      const res = await fetch(`${API_BASE}/automerge/comment/${commentId}`, { method: 'DELETE' });
+      const data = await res.json();
+      if (data.success) {
+        console.log(`Deleted comment ${commentId}`);
+      } else {
+        console.error('Error:', data.error);
+        process.exit(1);
       }
     }
 
