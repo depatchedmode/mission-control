@@ -26,9 +26,23 @@
 import { AutomergeStore } from '../lib/automerge-store.js';
 
 const API_BASE = 'http://localhost:8004';
-const args = process.argv.slice(2);
+const rawArgs = process.argv.slice(2);
+const args = rawArgs;
 const command = args[0];
 const subcommand = args[1];
+
+// Extract positional args (skip --flag value pairs)
+function positionalArgs() {
+  const result = [];
+  for (let i = 0; i < rawArgs.length; i++) {
+    if (rawArgs[i].startsWith('--')) {
+      i++; // skip flag value
+    } else {
+      result.push(rawArgs[i]);
+    }
+  }
+  return result;
+}
 
 // Lazy-loaded store (only init when HTTP unavailable)
 let _store = null;
@@ -152,8 +166,9 @@ async function main() {
     // mc comment <task-id> "message"
     // ─────────────────────────────────────────
     if (command === 'comment') {
-      const taskId = args[1];
-      const message = args[2];
+      const posArgs = positionalArgs();
+      const taskId = posArgs[1];
+      const message = posArgs[2];
       const agent = getArg('agent', process.env.MC_AGENT || 'unknown');
       
       if (!taskId || !message) {
