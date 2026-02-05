@@ -100,6 +100,8 @@ Patchwork Features:
      --status <s>                          Set status (todo/in-progress/completed)
      --assignee <name>                     Set assignee
      --title "text"                        Set title
+     --description "text"                  Set description
+     --priority <p0-p3>                    Set priority
   mc branch <task-id> <branch-name>        Create a task branch to experiment
   mc branches <task-id>                    List branches of a task
   mc merge <branch-task-id>                Merge branch back to parent
@@ -503,7 +505,9 @@ async function main() {
                 const newTitle = diff.new ? `"${diff.new}"` : '(none)';
                 console.log(`  Title: ${oldTitle} → ${newTitle}`);
               } else if (diff.field === 'description') {
-                console.log(`  Description updated`);
+                const oldDesc = diff.old ? `"${diff.old.substring(0, 60)}${diff.old.length > 60 ? '…' : ''}"` : '(none)';
+                const newDesc = diff.new ? `"${diff.new.substring(0, 60)}${diff.new.length > 60 ? '…' : ''}"` : '(none)';
+                console.log(`  Description: ${oldDesc} → ${newDesc}`);
               } else {
                 console.log(`  ${diff.field}: ${diff.old || '(none)'} → ${diff.new}`);
               }
@@ -518,14 +522,14 @@ async function main() {
     }
 
     // ─────────────────────────────────────────
-    // mc update <task-id> [--status <s>] [--assignee <name>] [--title "text"] [--priority <p>]
+    // mc update <task-id> [--status <s>] [--assignee <name>] [--title "text"] [--description "text"] [--priority <p>]
     // ─────────────────────────────────────────
     else if (command === 'update') {
       const taskId = args[1];
       const agent = getArg('agent', process.env.MC_AGENT || 'unknown');
       
       if (!taskId) {
-        console.error('Usage: mc update <task-id> [--status <s>] [--assignee <name>] [--title "text"] [--priority <p>]');
+        console.error('Usage: mc update <task-id> [--status <s>] [--assignee <name>] [--title "text"] [--description "text"] [--priority <p>]');
         process.exit(1);
       }
       
@@ -533,15 +537,17 @@ async function main() {
       const status = getArg('status');
       const assignee = getArg('assignee');
       const title = getArg('title');
+      const description = getArg('description');
       const priority = getArg('priority');
       
       if (status) updates.status = status;
       if (assignee) updates.assignee = assignee;
       if (title) updates.title = title;
+      if (description) updates.description = description;
       if (priority) updates.priority = priority;
       
       if (Object.keys(updates).length <= 1) { // only agent
-        console.error('No updates specified. Use --status, --assignee, --title, or --priority');
+        console.error('No updates specified. Use --status, --assignee, --title, --description, or --priority');
         process.exit(1);
       }
       

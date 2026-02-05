@@ -1,5 +1,6 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react'
 import Markdown from 'react-markdown'
+import remarkGfm from 'remark-gfm'
 
 // Track last seen comment timestamps per task
 const getLastSeen = () => {
@@ -72,7 +73,7 @@ export default function MissionControlSync() {
   
   const createTask = (title, priority = 'p2') => {
     const id = 'task-' + Math.random().toString(36).substr(2, 9)
-    sendChange({ type: 'task-create', task: { id, title, status: 'todo', priority, tags: [], order: Date.now(), type: 'task', description: '', assignee: null, created_at: new Date().toISOString() } })
+    sendChange({ type: 'task-create', task: { id, title, status: 'backlog', priority, tags: [], order: Date.now(), type: 'task', description: '', assignee: null, created_at: new Date().toISOString() } })
     setShowNewTask(false)
   }
   
@@ -108,8 +109,10 @@ export default function MissionControlSync() {
     return (a.order || 0) - (b.order || 0)
   })
   
-  const todoTasks = sortTasks(tasks.filter(t => t.status === 'todo'))
+  const backlogTasks = sortTasks(tasks.filter(t => t.status === 'todo' || t.status === 'backlog'))
+  const upNextTasks = sortTasks(tasks.filter(t => t.status === 'up-next'))
   const inProgressTasks = sortTasks(tasks.filter(t => t.status === 'in-progress'))
+  const reviewTasks = sortTasks(tasks.filter(t => t.status === 'review'))
   const completedTasks = sortTasks(tasks.filter(t => t.status === 'completed'))
   
   const getTaskComments = (taskId) => comments.filter(c => c.task_id === taskId).sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp))
@@ -134,12 +137,16 @@ export default function MissionControlSync() {
       </header>
       
       <div className="mc-board">
-        <TaskColumn title="To Do" status="todo" tasks={todoTasks} onSelect={setSelectedTask} 
+        <TaskColumn title="Backlog" status="backlog" tasks={backlogTasks} onSelect={setSelectedTask} 
+          onDragStart={setDraggedTask} onDrop={handleDrop} isDragging={!!draggedTask} getUnreadCount={getUnreadCount} />
+        <TaskColumn title="Up Next" status="up-next" tasks={upNextTasks} onSelect={setSelectedTask}
           onDragStart={setDraggedTask} onDrop={handleDrop} isDragging={!!draggedTask} getUnreadCount={getUnreadCount} />
         <TaskColumn title="In Progress" status="in-progress" tasks={inProgressTasks} highlight onSelect={setSelectedTask}
           onDragStart={setDraggedTask} onDrop={handleDrop} isDragging={!!draggedTask} getUnreadCount={getUnreadCount} />
-        <TaskColumn title="Done" status="completed" tasks={completedTasks} onSelect={setSelectedTask}
+        <TaskColumn title="Review" status="review" tasks={reviewTasks} onSelect={setSelectedTask}
           onDragStart={setDraggedTask} onDrop={handleDrop} isDragging={!!draggedTask} getUnreadCount={getUnreadCount} />
+        <TaskColumn title="Done" status="completed" tasks={completedTasks} onSelect={setSelectedTask}
+          onDragStart={setDraggedTask} onDrop={handleDrop} isDragging={!!draggedTask} getUnreadCount={getUnreadCount} collapsible defaultCollapsed />
       </div>
       
       {showNewTask && <NewTaskModal onClose={() => setShowNewTask(false)} onCreate={createTask} />}
@@ -158,10 +165,11 @@ export default function MissionControlSync() {
   )
 }
 
-function TaskColumn({ title, status, tasks, highlight, onSelect, onDragStart, onDrop, isDragging, getUnreadCount }) {
+function TaskColumn({ title, status, tasks, highlight, onSelect, onDragStart, onDrop, isDragging, getUnreadCount, collapsible, defaultCollapsed }) {
   const [dragOver, setDragOver] = useState(false)
+  const [collapsed, setCollapsed] = useState(defaultCollapsed || false)
   
-  const handleDragOver = (e) => { e.preventDefault(); setDragOver(true) }
+  const handleDragOver = (e) => { e.preventDefault(); setDragOver(true); if (collapsed) setCollapsed(false) }
   const handleDragLeave = () => setDragOver(false)
   const handleDrop = (e) => {
     e.preventDefault()
@@ -170,23 +178,28 @@ function TaskColumn({ title, status, tasks, highlight, onSelect, onDragStart, on
     setDragOver(false)
   }
   
+  const columnClass = `mc-column${collapsed ? ' mc-column-collapsed' : ''}`
+  
   return (
-    <div className="mc-column" 
+    <div className={columnClass}
       onDragOver={handleDragOver} 
       onDragLeave={handleDragLeave} 
       onDrop={handleDrop}
       style={dragOver ? { background: '#1a1a1a' } : {}}
     >
-      <div style={styles.columnHeader}>
-        <span style={styles.columnTitle}>{title}</span>
+      <div style={styles.columnHeader} onClick={collapsible ? () => setCollapsed(!collapsed) : undefined}>
+        <span style={styles.columnTitle}>{collapsed ? <span className="mc-collapsed-title">{title}</span> : title}</span>
         <span style={{ ...styles.columnCount, ...(highlight && tasks.length > 0 ? styles.columnCountHighlight : {}) }}>{tasks.length}</span>
+        {collapsible && <span style={styles.collapseToggle}>{collapsed ? '›' : '‹'}</span>}
       </div>
-      <div style={styles.columnBody}>
-        {tasks.map(task => (
-          <TaskCard key={task.id} task={task} onSelect={onSelect} onDragStart={onDragStart} unreadCount={getUnreadCount(task.id)} />
-        ))}
-        {tasks.length === 0 && <p style={styles.emptyText}>{isDragging ? 'Drop here' : 'No tasks'}</p>}
-      </div>
+      {!collapsed && (
+        <div style={styles.columnBody}>
+          {tasks.map(task => (
+            <TaskCard key={task.id} task={task} onSelect={onSelect} onDragStart={onDragStart} unreadCount={getUnreadCount(task.id)} />
+          ))}
+          {tasks.length === 0 && <p style={styles.emptyText}>{isDragging ? 'Drop here' : 'No tasks'}</p>}
+        </div>
+      )}
     </div>
   )
 }
@@ -283,8 +296,8 @@ function TaskDetailModal({ task, comments, agents, onClose, onUpdate, onComment 
     commentsEndRef.current?.scrollIntoView({ behavior: 'smooth' })
   }
   
-  const statusCycle = { 'todo': 'in-progress', 'in-progress': 'completed', 'completed': 'todo' }
-  const statusLabels = { 'todo': 'To Do', 'in-progress': 'In Progress', 'completed': 'Done' }
+  const statusCycle = { 'todo': 'up-next', 'backlog': 'up-next', 'up-next': 'in-progress', 'in-progress': 'review', 'review': 'completed', 'completed': 'backlog' }
+  const statusLabels = { 'todo': 'Backlog', 'backlog': 'Backlog', 'up-next': 'Up Next', 'in-progress': 'In Progress', 'review': 'Review', 'completed': 'Done' }
   const currentPriority = PRIORITIES.find(p => p.value === task.priority) || PRIORITIES[2]
   
   const handleCommentChange = (e) => {
@@ -384,7 +397,7 @@ function TaskDetailModal({ task, comments, agents, onClose, onUpdate, onComment 
           
           {task.description && (
             <div style={styles.descriptionSection}>
-              <Markdown components={{
+              <Markdown remarkPlugins={[remarkGfm]} components={{
                 p: ({children}) => <p style={styles.mdP}>{children}</p>,
                 a: ({href, children}) => <a href={href} style={styles.mdLink} target="_blank" rel="noopener noreferrer">{children}</a>,
                 code: ({children}) => <code style={styles.mdCode}>{children}</code>,
@@ -393,6 +406,12 @@ function TaskDetailModal({ task, comments, agents, onClose, onUpdate, onComment 
                 ol: ({children}) => <ol style={styles.mdList}>{children}</ol>,
                 li: ({children}) => <li style={styles.mdLi}>{children}</li>,
                 strong: ({children}) => <strong style={styles.mdStrong}>{children}</strong>,
+                table: ({children}) => <table style={styles.mdTable}>{children}</table>,
+                thead: ({children}) => <thead style={styles.mdThead}>{children}</thead>,
+                tbody: ({children}) => <tbody>{children}</tbody>,
+                tr: ({children}) => <tr style={styles.mdTr}>{children}</tr>,
+                th: ({children}) => <th style={styles.mdTh}>{children}</th>,
+                td: ({children}) => <td style={styles.mdTd}>{children}</td>,
               }}>
                 {task.description}
               </Markdown>
@@ -468,6 +487,7 @@ const styles = {
   columnCount: { fontSize: 12, color: '#444', background: '#1a1a1a', padding: '2px 8px', borderRadius: 10 },
   columnCountHighlight: { color: '#fff', background: '#10b981' },
   columnBody: { padding: '8px 12px', minHeight: 100 },
+  collapseToggle: { fontSize: 16, color: '#444', marginLeft: 8 },
   
   card: { background: '#111', border: '1px solid #1a1a1a', borderRadius: 8, padding: '12px 14px', marginBottom: 8, cursor: 'grab', transition: 'border-color 0.15s, box-shadow 0.15s' },
   cardUnread: { borderColor: '#10b981', boxShadow: '0 0 0 1px #10b981' },
@@ -517,6 +537,11 @@ const styles = {
   mdList: { margin: '12px 0', paddingLeft: 24, color: '#ccc' },
   mdLi: { marginBottom: 6, lineHeight: 1.5 },
   mdStrong: { color: '#fff', fontWeight: 600 },
+  mdTable: { width: '100%', borderCollapse: 'collapse', margin: '12px 0', fontSize: 13 },
+  mdThead: { borderBottom: '2px solid #333' },
+  mdTr: { borderBottom: '1px solid #222' },
+  mdTh: { padding: '8px 12px', textAlign: 'left', color: '#888', fontWeight: 500 },
+  mdTd: { padding: '8px 12px', color: '#ccc' },
   
   commentsSection: { marginTop: 24, display: 'flex', flexDirection: 'column', minHeight: 200 },
   commentsSectionHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
@@ -545,10 +570,20 @@ if (!document.getElementById('mc-styles')) {
     html, body { height: 100%; overflow: auto; -webkit-overflow-scrolling: touch; }
     .mc-board { display: flex; flex-direction: column; }
     .mc-column { flex: 1; min-width: 0; border-bottom: 1px solid #1a1a1a; }
+    .mc-column-collapsed { flex: 0 0 auto; }
+    .mc-column-collapsed .mc-collapsed-title { display: inline; }
+    @media (max-width: 767px) {
+      /* Mobile: collapsed vertically (shorter height) */
+      .mc-column-collapsed { max-height: 48px; overflow: hidden; }
+    }
     @media (min-width: 768px) {
       .mc-board { flex-direction: row; height: calc(100vh - 60px); }
       .mc-column { border-bottom: none; border-right: 1px solid #1a1a1a; overflow-y: auto; }
       .mc-column:last-child { border-right: none; }
+      /* Desktop: collapsed horizontally (narrower width) */
+      .mc-column-collapsed { flex: 0 0 48px; min-width: 48px; max-width: 48px; overflow: hidden; cursor: pointer; }
+      .mc-column-collapsed > div:first-child { flex-direction: column; padding: 12px 8px; gap: 8px; cursor: pointer; }
+      .mc-column-collapsed .mc-collapsed-title { writing-mode: vertical-rl; text-orientation: mixed; }
     }
     .mc-card:hover { border-color: #333; }
     .mc-card:active { cursor: grabbing; }
