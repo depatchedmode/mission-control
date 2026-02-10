@@ -21,9 +21,15 @@
  *   mc branch <task-id> <branch-name>
  *   mc branches <task-id>
  *   mc merge <branch-task-id>
+ * 
+ * Agent Trace:
+ *   mc commit [git commit args]          Commit with agent attribution
+ *   mc trace list [--limit <n>]          List recent traced commits
+ *   mc trace show <commit-hash>          Show trace for a specific commit
  */
 
 import { AutomergeStore } from '../lib/automerge-store.js';
+import * as agentTrace from '../lib/agent-trace.js';
 
 const API_BASE = 'http://localhost:8004';
 const rawArgs = process.argv.slice(2);
@@ -121,8 +127,17 @@ Patchwork Features:
   mc branches <task-id>                    List branches of a task
   mc merge <branch-task-id>                Merge branch back to parent
 
+Agent Trace (commit attribution):
+  mc commit [git args]                     Commit with agent attribution trace
+     --task <id>                           Link commit to Mission Control task
+     (all other args passed to git commit)
+  mc trace list [--limit <n>]              List recent traced commits
+  mc trace show <commit-hash>              Show trace details for a commit
+
 Environment:
-  MC_AGENT    Your agent name (default: from --agent or 'unknown')
+  MC_AGENT              Agent name (default: 'unknown')
+  OPENCLAW_MODEL        Model name for traces
+  OPENCLAW_SESSION_KEY  Session key for conversation context lookup
 
 Examples:
   MC_AGENT=gary mc comment clawd-pxdf "Starting work on this"
@@ -722,6 +737,149 @@ async function main() {
         console.error(`❌ Failed: ${e.message}`);
         console.error('   Is the sync server running? (pm2 start mc-sync)');
         process.exit(1);
+      }
+    }
+
+    // ─────────────────────────────────────────
+    // mc commit [git commit args]
+    // Wrapper around git commit with agent attribution
+    // ─────────────────────────────────────────
+    else if (command === 'commit') {
+      const repoPath = agentTrace.findGitRoot();
+      
+      if (!repoPath) {
+        console.error('❌ Not in a git repository');
+        process.exit(1);
+      }
+      
+      // Extract our custom args, pass the rest to git
+      const taskId = getArg('task');
+      const agent = getArg('agent', process.env.MC_AGENT || 'unknown');
+      const model = getArg('model', process.env.OPENCLAW_MODEL || null);
+      const sessionKey = getArg('session', process.env.OPENCLAW_SESSION_KEY || null);
+      
+      // Build git args (remove our custom flags)
+      const gitArgs = [];
+      for (let i = 1; i < rawArgs.length; i++) {
+        const arg = rawArgs[i];
+        if (arg === '--task' || arg === '--agent' || arg === '--model' || arg === '--session') {
+          i++; // skip the value too
+        } else {
+          gitArgs.push(arg);
+        }
+      }
+      
+      // Capture diff stats before commit
+      const diffStats = agentTrace.getDiffStats(repoPath);
+      
+      // Execute git commit
+      const exitCode = agentTrace.gitCommit(gitArgs, repoPath);
+      
+      if (exitCode !== 0) {
+        process.exit(exitCode);
+      }
+      
+      // Get commit info after successful commit
+      const commitInfo = agentTrace.getLatestCommit(repoPath);
+      
+      if (!commitInfo) {
+        console.error('⚠️  Commit succeeded but failed to get commit info');
+        process.exit(0);
+      }
+      
+      // Create trace record
+      const { filepath, trace } = agentTrace.createTrace({
+        repoPath,
+        commitHash: commitInfo.hash,
+        commitMessage: commitInfo.message,
+        commitAuthor: commitInfo.author,
+        agent,
+        model,
+        sessionKey,
+        taskId,
+        diffStats
+      });
+      
+      console.log(`\n📋 Trace recorded: ${trace.commit.hash.substring(0, 8)}`);
+      console.log(`   Agent: @${trace.agent.name}`);
+      if (trace.agent.model) console.log(`   Model: ${trace.agent.model}`);
+      if (trace.task) console.log(`   Task: ${trace.task}`);
+    }
+
+    // ─────────────────────────────────────────
+    // mc trace list [--limit <n>]
+    // ─────────────────────────────────────────
+    else if (command === 'trace' && subcommand === 'list') {
+      const repoPath = agentTrace.findGitRoot();
+      
+      if (!repoPath) {
+        console.error('❌ Not in a git repository');
+        process.exit(1);
+      }
+      
+      const limit = parseInt(getArg('limit', '20'));
+      const traces = agentTrace.listTraces(repoPath, { limit });
+      
+      if (traces.length === 0) {
+        console.log('No traces found. Use `mc commit` to create attributed commits.');
+      } else {
+        console.log(`\n📋 Recent traced commits (${traces.length}):\n`);
+        
+        for (const t of traces) {
+          const shortHash = t.commit.hash.substring(0, 8);
+          const msgPreview = t.commit.message.split('\n')[0].substring(0, 50);
+          const msgSuffix = t.commit.message.split('\n')[0].length > 50 ? '...' : '';
+          
+          console.log(`  ${shortHash} @${t.agent.name} ${formatTime(t.timestamp)}`);
+          console.log(`    "${msgPreview}${msgSuffix}"`);
+          if (t.agent.model) console.log(`    Model: ${t.agent.model}`);
+          if (t.task) console.log(`    Task: ${t.task}`);
+          if (t.diff?.shortstat) console.log(`    ${t.diff.shortstat}`);
+          console.log();
+        }
+      }
+    }
+
+    // ─────────────────────────────────────────
+    // mc trace show <commit-hash>
+    // ─────────────────────────────────────────
+    else if (command === 'trace' && subcommand === 'show') {
+      const commitHash = args[2];
+      
+      if (!commitHash) {
+        console.error('Usage: mc trace show <commit-hash>');
+        process.exit(1);
+      }
+      
+      const repoPath = agentTrace.findGitRoot();
+      
+      if (!repoPath) {
+        console.error('❌ Not in a git repository');
+        process.exit(1);
+      }
+      
+      const trace = agentTrace.getTraceByCommit(repoPath, commitHash);
+      
+      if (!trace) {
+        console.log(`No trace found for commit ${commitHash}`);
+        console.log('(Only commits made with `mc commit` have traces)');
+        process.exit(1);
+      }
+      
+      console.log(`\n📋 Trace: ${trace.commit.hash}`);
+      console.log('─'.repeat(50));
+      console.log(`Timestamp:   ${trace.timestamp}`);
+      console.log(`Message:     ${trace.commit.message.split('\n')[0]}`);
+      console.log(`Author:      ${trace.commit.author}`);
+      console.log();
+      console.log(`Agent:       @${trace.agent.name}`);
+      if (trace.agent.model) console.log(`Model:       ${trace.agent.model}`);
+      if (trace.agent.sessionKey) console.log(`Session:     ${trace.agent.sessionKey}`);
+      if (trace.task) console.log(`Task:        ${trace.task}`);
+      
+      if (trace.diff?.stat) {
+        console.log('\nDiff stats:');
+        console.log(trace.diff.stat);
       }
     }
 
