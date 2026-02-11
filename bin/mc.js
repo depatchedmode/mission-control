@@ -935,7 +935,9 @@ async function main() {
         process.exit(1);
       }
       
-      const doc = await getDoc();
+      // Use direct store to ensure we see latest commits
+      const store = await getStore();
+      const doc = store.getDoc();
       const history = ((doc.taskHistory || {})[taskId] || [])
         .filter(h => h.type === 'commit');
       
