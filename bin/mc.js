@@ -26,6 +26,7 @@
  *   mc commit [git commit args]          Commit with agent attribution
  *   mc trace list [--limit <n>]          List recent traced commits
  *   mc trace show <commit-hash>          Show trace for a specific commit
+ *   mc trace task <task-id>              Show commits linked to a task
  */
 
 import { AutomergeStore } from '../lib/automerge-store.js';
@@ -133,6 +134,7 @@ Agent Trace (commit attribution):
      (all other args passed to git commit)
   mc trace list [--limit <n>]              List recent traced commits
   mc trace show <commit-hash>              Show trace details for a commit
+  mc trace task <task-id>                   Show all commits linked to a task
 
 Environment:
   MC_AGENT              Agent name (default: 'unknown')
@@ -490,7 +492,8 @@ async function main() {
             'task_branched': '🌿',
             'task_merged': '🔀',
             'agent_registered': '🤖',
-            'status_changed': '🔄'
+            'status_changed': '🔄',
+            'commit_linked': '🔗'
           }[entry.type] || '●';
           
           console.log(`│`);
@@ -537,30 +540,49 @@ async function main() {
         const data = await apiGet(`/automerge/task/${taskId}/history`);
         const history = data.history || [];
         
-        if (history.length === 0) {
+        // Merge API history with commit history from Patchwork
+        const doc = await getDoc();
+        const commitHistory = ((doc.taskHistory || {})[taskId] || [])
+          .filter(h => h.type === 'commit');
+        
+        // Combine and sort all history
+        const allHistory = [
+          ...history.map(h => ({ ...h, _kind: 'change' })),
+          ...commitHistory.map(h => ({ ...h, _kind: 'commit' }))
+        ].sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
+        
+        if (allHistory.length === 0) {
           console.log(`No history found for task ${taskId}`);
         } else {
           console.log(`\n📜 History for ${taskId}`);
           console.log('─'.repeat(50));
           
-          for (const change of history) {
-            console.log(`\n${formatTime(change.timestamp)} ${change.agent ? `@${change.agent}` : ''}`);
-            
-            for (const diff of change.changes) {
-              if (diff.field === 'status') {
-                console.log(`  Status: ${diff.old || '(none)'} → ${diff.new}`);
-              } else if (diff.field === 'assignee') {
-                console.log(`  Assignee: ${diff.old || 'unassigned'} → ${diff.new || 'unassigned'}`);
-              } else if (diff.field === 'title') {
-                const oldTitle = diff.old ? `"${diff.old}"` : '(none)';
-                const newTitle = diff.new ? `"${diff.new}"` : '(none)';
-                console.log(`  Title: ${oldTitle} → ${newTitle}`);
-              } else if (diff.field === 'description') {
-                const oldDesc = diff.old ? `"${diff.old.substring(0, 60)}${diff.old.length > 60 ? '…' : ''}"` : '(none)';
-                const newDesc = diff.new ? `"${diff.new.substring(0, 60)}${diff.new.length > 60 ? '…' : ''}"` : '(none)';
-                console.log(`  Description: ${oldDesc} → ${newDesc}`);
-              } else {
-                console.log(`  ${diff.field}: ${diff.old || '(none)'} → ${diff.new}`);
+          for (const entry of allHistory) {
+            if (entry._kind === 'commit') {
+              console.log(`\n🔗 ${formatTime(entry.timestamp)} ${entry.agent ? `@${entry.agent}` : ''}`);
+              console.log(`  Commit: ${entry.commit.shortHash} "${entry.commit.message.split('\n')[0]}"`);
+              if (entry.commit.diff?.shortstat) {
+                console.log(`  ${entry.commit.diff.shortstat}`);
+              }
+            } else {
+              console.log(`\n${formatTime(entry.timestamp)} ${entry.agent ? `@${entry.agent}` : ''}`);
+              
+              for (const diff of (entry.changes || [])) {
+                if (diff.field === 'status') {
+                  console.log(`  Status: ${diff.old || '(none)'} → ${diff.new}`);
+                } else if (diff.field === 'assignee') {
+                  console.log(`  Assignee: ${diff.old || 'unassigned'} → ${diff.new || 'unassigned'}`);
+                } else if (diff.field === 'title') {
+                  const oldTitle = diff.old ? `"${diff.old}"` : '(none)';
+                  const newTitle = diff.new ? `"${diff.new}"` : '(none)';
+                  console.log(`  Title: ${oldTitle} → ${newTitle}`);
+                } else if (diff.field === 'description') {
+                  const oldDesc = diff.old ? `"${diff.old.substring(0, 60)}${diff.old.length > 60 ? '…' : ''}"` : '(none)';
+                  const newDesc = diff.new ? `"${diff.new.substring(0, 60)}${diff.new.length > 60 ? '…' : ''}"` : '(none)';
+                  console.log(`  Description: ${oldDesc} → ${newDesc}`);
+                } else {
+                  console.log(`  ${diff.field}: ${diff.old || '(none)'} → ${diff.new}`);
+                }
               }
             }
           }
@@ -804,6 +826,24 @@ async function main() {
       console.log(`   Agent: @${trace.agent.name}`);
       if (trace.agent.model) console.log(`   Model: ${trace.agent.model}`);
       if (trace.task) console.log(`   Task: ${trace.task}`);
+      
+      // Link commit to Patchwork timeline if task specified
+      if (taskId) {
+        try {
+          const store = new AutomergeStore();
+          await store.init();
+          await store.recordCommit(taskId, {
+            hash: commitInfo.hash,
+            message: commitInfo.message,
+            diff: diffStats
+          }, agent);
+          await store.close();
+          console.log(`   📎 Linked to Patchwork timeline`);
+        } catch (err) {
+          // Non-fatal — trace is already saved
+          console.error(`   ⚠️  Could not link to Patchwork: ${err.message}`);
+        }
+      }
     }
 
     // ─────────────────────────────────────────
@@ -880,6 +920,45 @@ async function main() {
       if (trace.diff?.stat) {
         console.log('\nDiff stats:');
         console.log(trace.diff.stat);
+      }
+    }
+
+    // ─────────────────────────────────────────
+    // mc trace task <task-id>
+    // Show all commits linked to a task
+    // ─────────────────────────────────────────
+    else if (command === 'trace' && subcommand === 'task') {
+      const taskId = args[2];
+      
+      if (!taskId) {
+        console.error('Usage: mc trace task <task-id>');
+        process.exit(1);
+      }
+      
+      // Use direct store to ensure we see latest commits
+      const store = await getStore();
+      const doc = store.getDoc();
+      const history = ((doc.taskHistory || {})[taskId] || [])
+        .filter(h => h.type === 'commit');
+      
+      if (history.length === 0) {
+        console.log(`No commits linked to task ${taskId}`);
+        console.log('Use `mc commit --task <id>` to link commits.');
+      } else {
+        const task = doc.tasks?.[taskId];
+        const title = task ? task.title : taskId;
+        
+        console.log(`\n🔗 Commits for: ${title}`);
+        console.log('─'.repeat(50));
+        
+        for (const entry of history) {
+          console.log(`\n  ${entry.commit.shortHash} @${entry.agent} ${formatTime(entry.timestamp)}`);
+          console.log(`    "${entry.commit.message.split('\n')[0]}"`);
+          if (entry.commit.diff?.shortstat) {
+            console.log(`    ${entry.commit.diff.shortstat}`);
+          }
+        }
+        console.log();
       }
     }
 

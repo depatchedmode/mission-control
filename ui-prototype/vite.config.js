@@ -12,7 +12,7 @@ export default defineConfig({
   server: {
     host: '0.0.0.0',
     port: 5174,
-    allowedHosts: ['gary-clawd-bot.exe.xyz', 'localhost'],
+    allowedHosts: ['garyc.exe.xyz', 'localhost'],
     fs: {
       allow: ['..']
     },

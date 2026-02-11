@@ -1,68 +1,69 @@
 # Mission Control Roadmap
 
-## Phase 1: Beans Extensions ⏳
-Add collaboration features to beans task tracker.
+## Completed ✅
 
-### 1.1 Comments/Messages
-- [ ] Add `comments` field to bean schema
-- [ ] `beans comment <id> "message"` CLI command
-- [ ] Comments stored in bean markdown file
-- [ ] Timestamp and author tracking
+### Phase 1: Core Infrastructure
+- [x] Automerge CRDT storage (`lib/automerge-store.js`)
+- [x] Task migration from beans (`migrate-beans.js`)
+- [x] CLI with full task management (`bin/mc.js`)
+- [x] Comments with @mentions
+- [x] Activity feed and timeline
+- [x] Agent registry
 
-### 1.2 @Mentions
-- [ ] Parse @agent-name in comments
-- [ ] Store mentions in structured format
-- [ ] `beans mentions list --agent <name>` to query
+### Phase 2: Real-Time Sync
+- [x] WebSocket sync server (`automerge-sync-server.js`)
+- [x] Multi-session document sync
+- [x] Conflict-free concurrent edits (CRDT)
 
-### 1.3 Activity Log
-- [ ] Track all bean changes (created, updated, commented, status change)
-- [ ] `beans activity` command to list recent activity
-- [ ] Activity stored in `.beans/activity.jsonl`
+### Phase 3: Patchwork Features
+- [x] Timeline view with rich context
+- [x] Task history tracking
+- [x] Branch/merge for task experimentation
+- [x] Diff visualization
 
-### 1.4 REST API
-- [ ] HTTP server for beans operations
-- [ ] Endpoints: GET/POST tasks, comments, mentions, activity
-- [ ] WebSocket for real-time updates (stretch)
-
-## Phase 2: Notification Daemon ⏳
-Deliver @mentions to agent sessions.
-
-- [ ] Poll for undelivered mentions
-- [ ] Map agent names to session keys
-- [ ] Send via `openclaw sessions send`
-- [ ] Mark as delivered
-- [ ] Run as systemd/pm2 service
-
-## Phase 3: Second Agent ⏳
-Create first specialist agent.
-
-- [ ] Separate workspace directory
-- [ ] SOUL.md with specialist personality
-- [ ] AGENTS.md with role-specific instructions
-- [ ] Heartbeat cron (staggered from lead agent)
-- [ ] Test coordination flow
-
-## Phase 4: Mission Control UI ⏳
-Extend dashboard with team view.
-
-- [ ] Activity feed (real-time via polling)
-- [ ] Task board with inline comments
-- [ ] Agent status cards
-- [ ] @mention autocomplete
-- [ ] Filter by agent/status
-
-## Phase 5: Daily Standup ⏳
-Automated end-of-day summary.
-
-- [ ] Cron job to compile activity
-- [ ] Format as readable summary
-- [ ] Send to human via Telegram
-- [ ] Track what was completed/blocked
+### Phase 4: UI Prototype
+- [x] React dashboard (`ui-prototype/`)
+- [x] Task board with sync
+- [x] Activity feed view
 
 ---
 
-## Current Focus
+## Current State (2026-02-08)
 
-**Phase 1.1: Comments/Messages**
+**Architecture:** Single-agent (Gary) using Mission Control for task tracking.
+**Storage:** 65 tasks in Automerge store
+**Status:** Functional, beans deprecated
 
-Starting with the foundation — adding comments to beans so agents can discuss tasks.
+---
+
+## Future Work (Unprioritized)
+
+### Polish & Stability
+- [ ] Deploy UI to production (currently prototype only)
+- [ ] Add `--json` output to CLI for scripting
+- [ ] Timestamp tracking for stale task detection
+- [ ] Backup/export functionality
+
+### Patchwork UX
+- [ ] UI timeline visualization
+- [ ] Diff viewer in dashboard
+- [ ] Branch management UI
+
+### Automation
+- [ ] Daily standup summary (cron → Telegram)
+- [ ] Stale task alerts
+- [ ] Activity digest
+
+### Multi-Agent (Paused)
+Previous work supported multiple agents (Gary, Friday, Writer). Currently consolidated to single Gary. Infrastructure remains if multi-agent is revisited:
+- Agent registry in Automerge store
+- @mention delivery system
+- Staggered heartbeat support
+
+---
+
+## Historical Notes
+
+- **2026-02-02**: Initial multi-agent architecture built
+- **2026-02-08**: Consolidated to single-Gary; beans deprecated
+- Original design was "companion layer to beans" — pivoted to full Automerge replacement

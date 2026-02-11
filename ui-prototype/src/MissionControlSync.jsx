@@ -2,16 +2,7 @@ import React, { useState, useEffect, useRef, useCallback } from 'react'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
-// Track last seen comment timestamps per task
-const getLastSeen = () => {
-  try { return JSON.parse(localStorage.getItem('mc-last-seen') || '{}') } 
-  catch { return {} }
-}
-const setLastSeen = (taskId, timestamp) => {
-  const seen = getLastSeen()
-  seen[taskId] = timestamp
-  localStorage.setItem('mc-last-seen', JSON.stringify(seen))
-}
+// Global lastSeen state (single user, synced across all devices via Automerge)
 
 const PRIORITIES = [
   { value: 'p0', label: 'P0', color: '#ef4444' },
@@ -28,6 +19,7 @@ export default function MissionControlSync() {
   const [showNewTask, setShowNewTask] = useState(false)
   const [selectedTask, setSelectedTask] = useState(null)
   const [draggedTask, setDraggedTask] = useState(null)
+  const [mobileActiveColumn, setMobileActiveColumn] = useState('in-progress')
   const wsRef = useRef(null)
   
   useEffect(() => {
@@ -120,7 +112,7 @@ export default function MissionControlSync() {
   const getUnreadCount = (taskId) => {
     const taskComments = getTaskComments(taskId)
     if (taskComments.length === 0) return 0
-    const lastSeen = getLastSeen()[taskId]
+    const lastSeen = doc?.lastSeen?.[taskId]
     if (!lastSeen) return taskComments.length
     return taskComments.filter(c => new Date(c.timestamp) > new Date(lastSeen)).length
   }
@@ -132,22 +124,41 @@ export default function MissionControlSync() {
         <div style={styles.headerMeta}>
           <span style={styles.stat}>{tasks.length} tasks</span>
           <span style={{ ...styles.connectionDot, background: connected ? '#10b981' : '#ef4444' }} />
-          <button style={styles.addBtn} onClick={() => setShowNewTask(true)}>+ New</button>
+          <button className="mc-header-add" style={styles.addBtn} onClick={() => setShowNewTask(true)}>+ New</button>
         </div>
       </header>
       
+      {/* Mobile column tabs */}
+      <div className="mc-mobile-tabs">
+        {[
+          { status: 'backlog', title: 'Backlog', count: backlogTasks.length },
+          { status: 'up-next', title: 'Up Next', count: upNextTasks.length },
+          { status: 'in-progress', title: 'In Progress', count: inProgressTasks.length },
+          { status: 'review', title: 'Review', count: reviewTasks.length },
+          { status: 'completed', title: 'Done', count: completedTasks.length },
+        ].map(col => (
+          <button key={col.status} className={`mc-mobile-tab ${mobileActiveColumn === col.status ? 'active' : ''}`}
+            onClick={() => setMobileActiveColumn(col.status)}>
+            {col.title}<span className="tab-count">{col.count}</span>
+          </button>
+        ))}
+      </div>
+      
       <div className="mc-board">
         <TaskColumn title="Backlog" status="backlog" tasks={backlogTasks} onSelect={setSelectedTask} 
-          onDragStart={setDraggedTask} onDrop={handleDrop} isDragging={!!draggedTask} getUnreadCount={getUnreadCount} />
+          onDragStart={setDraggedTask} onDrop={handleDrop} isDragging={!!draggedTask} getUnreadCount={getUnreadCount} mobileActive={mobileActiveColumn === 'backlog'} />
         <TaskColumn title="Up Next" status="up-next" tasks={upNextTasks} onSelect={setSelectedTask}
-          onDragStart={setDraggedTask} onDrop={handleDrop} isDragging={!!draggedTask} getUnreadCount={getUnreadCount} />
+          onDragStart={setDraggedTask} onDrop={handleDrop} isDragging={!!draggedTask} getUnreadCount={getUnreadCount} mobileActive={mobileActiveColumn === 'up-next'} />
         <TaskColumn title="In Progress" status="in-progress" tasks={inProgressTasks} highlight onSelect={setSelectedTask}
-          onDragStart={setDraggedTask} onDrop={handleDrop} isDragging={!!draggedTask} getUnreadCount={getUnreadCount} />
+          onDragStart={setDraggedTask} onDrop={handleDrop} isDragging={!!draggedTask} getUnreadCount={getUnreadCount} mobileActive={mobileActiveColumn === 'in-progress'} />
         <TaskColumn title="Review" status="review" tasks={reviewTasks} onSelect={setSelectedTask}
-          onDragStart={setDraggedTask} onDrop={handleDrop} isDragging={!!draggedTask} getUnreadCount={getUnreadCount} />
+          onDragStart={setDraggedTask} onDrop={handleDrop} isDragging={!!draggedTask} getUnreadCount={getUnreadCount} mobileActive={mobileActiveColumn === 'review'} />
         <TaskColumn title="Done" status="completed" tasks={completedTasks} onSelect={setSelectedTask}
-          onDragStart={setDraggedTask} onDrop={handleDrop} isDragging={!!draggedTask} getUnreadCount={getUnreadCount} collapsible defaultCollapsed />
+          onDragStart={setDraggedTask} onDrop={handleDrop} isDragging={!!draggedTask} getUnreadCount={getUnreadCount} collapsible defaultCollapsed mobileActive={mobileActiveColumn === 'completed'} />
       </div>
+      
+      {/* Mobile FAB */}
+      <button className="mc-fab" onClick={() => setShowNewTask(true)}>+</button>
       
       {showNewTask && <NewTaskModal onClose={() => setShowNewTask(false)} onCreate={createTask} />}
       
@@ -165,7 +176,7 @@ export default function MissionControlSync() {
   )
 }
 
-function TaskColumn({ title, status, tasks, highlight, onSelect, onDragStart, onDrop, isDragging, getUnreadCount, collapsible, defaultCollapsed }) {
+function TaskColumn({ title, status, tasks, highlight, onSelect, onDragStart, onDrop, isDragging, getUnreadCount, collapsible, defaultCollapsed, mobileActive }) {
   const [dragOver, setDragOver] = useState(false)
   const [collapsed, setCollapsed] = useState(defaultCollapsed || false)
   
@@ -178,7 +189,7 @@ function TaskColumn({ title, status, tasks, highlight, onSelect, onDragStart, on
     setDragOver(false)
   }
   
-  const columnClass = `mc-column${collapsed ? ' mc-column-collapsed' : ''}`
+  const columnClass = `mc-column${collapsed ? ' mc-column-collapsed' : ''}${mobileActive ? ' mobile-active' : ''}`
   
   return (
     <div className={columnClass}
@@ -280,7 +291,12 @@ function TaskDetailModal({ task, comments, agents, onClose, onUpdate, onComment 
   useEffect(() => {
     if (comments.length > 0) {
       const latestTimestamp = comments[comments.length - 1].timestamp
-      setLastSeen(task.id, latestTimestamp)
+      // Sync to server (global lastSeen, single user)
+      fetch('/mc-api/automerge/last-seen', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ taskId: task.id, timestamp: latestTimestamp })
+      }).catch(() => {})
     }
   }, [task.id, comments.length])
   
@@ -353,7 +369,7 @@ function TaskDetailModal({ task, comments, agents, onClose, onUpdate, onComment 
   
   return (
     <div style={styles.modalOverlay} onClick={onClose}>
-      <div style={styles.fullModal} onClick={e => e.stopPropagation()}>
+      <div className="mc-modal-full" style={styles.fullModal} onClick={e => e.stopPropagation()}>
         <header style={styles.detailHeader}>
           <button style={styles.closeBtn} onClick={onClose}>✕</button>
           <span style={styles.taskId}>{task.id}</span>
@@ -543,11 +559,11 @@ const styles = {
   mdTh: { padding: '8px 12px', textAlign: 'left', color: '#888', fontWeight: 500 },
   mdTd: { padding: '8px 12px', color: '#ccc' },
   
-  commentsSection: { marginTop: 24, display: 'flex', flexDirection: 'column', minHeight: 200 },
+  commentsSection: { marginTop: 24 },
   commentsSectionHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
   sectionTitle: { fontSize: 14, fontWeight: 500, color: '#888', textTransform: 'uppercase', letterSpacing: '0.05em', margin: 0 },
   jumpBtn: { background: '#1a1a1a', border: '1px solid #333', color: '#888', borderRadius: 6, padding: '4px 10px', fontSize: 12, cursor: 'pointer' },
-  commentsContainer: { flex: 1, maxHeight: 400, overflowY: 'auto' },
+  commentsContainer: { },
   comment: { background: '#111', border: '1px solid #1a1a1a', borderRadius: 8, padding: 16, marginBottom: 12 },
   commentHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 8 },
   commentAuthor: { fontSize: 13, fontWeight: 500, color: '#10b981' },
@@ -572,15 +588,37 @@ if (!document.getElementById('mc-styles')) {
     .mc-column { flex: 1; min-width: 0; border-bottom: 1px solid #1a1a1a; }
     .mc-column-collapsed { flex: 0 0 auto; }
     .mc-column-collapsed .mc-collapsed-title { display: inline; }
+    
+    /* Mobile styles */
     @media (max-width: 767px) {
-      /* Mobile: collapsed vertically (shorter height) */
       .mc-column-collapsed { max-height: 48px; overflow: hidden; }
+      /* Mobile tabs for columns */
+      .mc-mobile-tabs { display: flex; overflow-x: auto; border-bottom: 1px solid #1a1a1a; -webkit-overflow-scrolling: touch; }
+      .mc-mobile-tabs::-webkit-scrollbar { display: none; }
+      .mc-mobile-tab { flex: 0 0 auto; padding: 12px 16px; color: #666; font-size: 13px; font-weight: 500; text-transform: uppercase; letter-spacing: 0.05em; border: none; background: transparent; cursor: pointer; white-space: nowrap; }
+      .mc-mobile-tab.active { color: #fff; border-bottom: 2px solid #10b981; }
+      .mc-mobile-tab .tab-count { margin-left: 6px; background: #1a1a1a; padding: 2px 6px; border-radius: 8px; font-size: 11px; }
+      .mc-mobile-tab.active .tab-count { background: #10b981; color: #fff; }
+      .mc-board { display: block; height: calc(100vh - 108px); overflow-y: auto; }
+      .mc-column { display: none; border-bottom: none; }
+      .mc-column.mobile-active { display: block; }
+      /* Larger tap targets on mobile */
+      .mc-card { padding: 16px; margin-bottom: 12px; }
+      .mc-card .cardTitle { font-size: 16px; }
+      /* Full screen modal on mobile */
+      .mc-modal-full { margin: 0 !important; max-width: 100% !important; max-height: 100% !important; border-radius: 0 !important; border: none !important; }
+      /* FAB for new task */
+      .mc-fab { position: fixed; bottom: 20px; right: 20px; width: 56px; height: 56px; border-radius: 28px; background: #10b981; color: #fff; border: none; font-size: 28px; font-weight: 300; cursor: pointer; box-shadow: 0 4px 12px rgba(0,0,0,0.4); z-index: 100; display: flex; align-items: center; justify-content: center; }
+      .mc-header-add { display: none; }
     }
+    
+    /* Desktop styles */
     @media (min-width: 768px) {
+      .mc-mobile-tabs { display: none; }
+      .mc-fab { display: none; }
       .mc-board { flex-direction: row; height: calc(100vh - 60px); }
-      .mc-column { border-bottom: none; border-right: 1px solid #1a1a1a; overflow-y: auto; }
+      .mc-column { display: block !important; border-bottom: none; border-right: 1px solid #1a1a1a; overflow-y: auto; }
       .mc-column:last-child { border-right: none; }
-      /* Desktop: collapsed horizontally (narrower width) */
       .mc-column-collapsed { flex: 0 0 48px; min-width: 48px; max-width: 48px; overflow: hidden; cursor: pointer; }
       .mc-column-collapsed > div:first-child { flex-direction: column; padding: 12px 8px; gap: 8px; cursor: pointer; }
       .mc-column-collapsed .mc-collapsed-title { writing-mode: vertical-rl; text-orientation: mixed; }

@@ -1,3 +1,4 @@
 node_modules/
 .mission-control/
 *.log
+.agent-trace/

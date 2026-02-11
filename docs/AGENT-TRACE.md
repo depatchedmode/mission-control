@@ -196,9 +196,27 @@ This creates an audit trail from commit → agent → conversation → decisions
 - Traces accumulate indefinitely (no auto-cleanup yet)
 - Session keys in traces could be sensitive if `.agent-trace/` is shared
 
+## Patchwork Integration
+
+When you use `--task`, the commit is automatically linked to the task's Patchwork timeline:
+
+```bash
+mc commit -m "fix: resolve bug" --task task-abc123
+# 📋 Trace recorded: abc123de
+#    Agent: @gary
+#    Task: task-abc123
+#    📎 Linked to Patchwork timeline
+```
+
+This means:
+- **`mc diff <task-id>`** shows commits alongside task status changes
+- **`mc trace task <task-id>`** lists all commits for a task
+- **`mc timeline`** shows commit events in the activity feed
+
+Full provenance chain: **commit → agent trace → task → conversation**
+
 ## Future Plans
 
 - [ ] `mc trace prune` — Clean up old traces
-- [ ] Integration with Patchwork timeline
 - [ ] Line-level attribution (Phase 4)
 - [ ] Retroactive attribution for existing commits

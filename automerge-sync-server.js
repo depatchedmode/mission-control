@@ -154,6 +154,28 @@ class AutomergeSyncServer {
       }
     })
     
+    // Update last-seen timestamp for a task (for read/unread sync - single user, global state)
+    this.app.post('/automerge/last-seen', async (req, res) => {
+      try {
+        const { taskId, timestamp } = req.body
+        if (!taskId) {
+          return res.status(400).json({ error: 'taskId is required' })
+        }
+        
+        const ts = timestamp || new Date().toISOString()
+        
+        await this.store.docHandle.change(doc => {
+          if (!doc.lastSeen) doc.lastSeen = {}
+          doc.lastSeen[taskId] = ts
+        })
+        
+        this.broadcastDocumentUpdate()
+        res.json({ success: true, taskId, timestamp: ts })
+      } catch (error) {
+        res.status(500).json({ error: error.message })
+      }
+    })
+
     // Register agent
     this.app.post('/automerge/agent', async (req, res) => {
       try {
