@@ -1,19 +1,23 @@
 {
   "name": "mission-control",
   "version": "0.1.0",
-  "description": "Multi-agent orchestration layer for OpenClaw",
+  "description": "Automerge-backed task coordination with CLI, sync server, and UI",
   "type": "module",
   "bin": {
     "mc": "./bin/mc.js"
   },
   "scripts": {
-    "test": "node --test",
-    "daemon": "node daemon/index.js"
+    "sync": "node automerge-sync-server.js",
+    "test": "node --test test/*.test.js",
+    "daemon": "node daemon/index.js",
+    "smoke:automerge": "node scripts/smoke/automerge-smoke.js",
+    "smoke:cli": "node scripts/smoke/cli-integration-smoke.js",
+    "smoke:migrated": "node scripts/smoke/migrated-data-report.js"
   },
   "keywords": [
-    "openclaw",
-    "ai-agents",
-    "multi-agent"
+    "mission-control",
+    "automerge",
+    "task-tracking"
   ],
   "license": "MIT",
   "dependencies": {

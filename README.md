@@ -29,8 +29,17 @@ Task tracking and coordination system built on Automerge CRDTs. Replaces beans w
 |-----------|----------|---------|
 | **mc CLI** | `bin/mc.js` | Primary interface for task management |
 | **Automerge Store** | `lib/automerge-store.js` | CRDT-based persistent storage |
-| **Sync Server** | `automerge-sync-server.js` | WebSocket real-time sync |
-| **UI Prototype** | `ui-prototype/` | React dashboard (WIP) |
+| **Sync Server** | `automerge-sync-server.js` | Canonical HTTP/WebSocket runtime |
+| **Notification Daemon** | `daemon/index.js` | Mention delivery worker |
+| **UI Prototype** | `ui-prototype/src/MissionControlSync.jsx` | React dashboard client |
+
+### Supported Runtime Paths
+
+Mission Control supports one runtime architecture:
+
+1. Start `automerge-sync-server.js` (HTTP + WebSocket state authority).
+2. Point CLI/daemon to that server (`MC_SYNC_SERVER` or `MC_HTTP_PORT`).
+3. Run UI through Vite proxy (`/mc-api` + `/mc-ws`).
 
 ## CLI Reference
 
@@ -77,23 +86,27 @@ See [docs/AGENT-TRACE.md](docs/AGENT-TRACE.md) for full documentation.
 
 ```bash
 # Install
-cd ~/clawd/mission-control
+cd /path/to/mission-control
 npm install
 
 # Symlink for easy access
 ln -s $(pwd)/bin/mc.js ~/bin/mc
 
+# Start sync server (required for shared runtime)
+export MC_API_TOKEN="$(openssl rand -hex 32)"
+MC_API_TOKEN="$MC_API_TOKEN" npm run sync
+
 # List tasks
-mc tasks
+MC_API_TOKEN="$MC_API_TOKEN" mc tasks
 
 # Create a task
-mc task create "Fix the thing" --priority p1
+MC_API_TOKEN="$MC_API_TOKEN" mc task create "Fix the thing" --priority p1
 
 # Add a comment
-mc comment <task-id> "Working on this now"
+MC_API_TOKEN="$MC_API_TOKEN" mc comment <task-id> "Working on this now"
 
 # Check activity
-mc activity --limit 10
+MC_API_TOKEN="$MC_API_TOKEN" mc activity --limit 10
 ```
 
 ## Data Storage
@@ -113,7 +126,32 @@ Located at `.mission-control/` (binary CRDT data)
 ```
 
 ### Sync
-Document URL stored in `.mission-control-url`. The sync server on ports 8004/8005 enables real-time collaboration between sessions.
+Document URL stored in `.mission-control-url`. The sync server defaults to HTTP `8004` and WebSocket `8005` and can be configured with environment variables.
+
+#### Security Configuration
+The sync server now requires an API token by default.
+
+```bash
+# Generate a token once per shell/session
+export MC_API_TOKEN="$(openssl rand -hex 32)"
+
+# Start server (binds to 127.0.0.1 by default)
+MC_API_TOKEN="$MC_API_TOKEN" npm run sync
+
+# Use CLI/daemon with the same token
+MC_API_TOKEN="$MC_API_TOKEN" mc tasks
+MC_API_TOKEN="$MC_API_TOKEN" npm run daemon
+```
+
+Optional environment settings:
+- `MC_ALLOWED_ORIGINS` (comma-separated CORS allowlist, defaults to localhost dev origins)
+- `MC_BIND_HOST` (default `127.0.0.1`)
+- `MC_HTTP_PORT` (default `8004`)
+- `MC_WS_PORT` (default `8005`)
+- `MC_SYNC_SERVER` (CLI/daemon API base URL override, e.g. `http://127.0.0.1:9000`)
+- `MC_ALLOW_INSECURE_LOCAL=1` (disables auth; local testing only)
+
+For the Vite UI, set `VITE_MC_API_TOKEN` in `ui-prototype/.env.local`.
 
 ## Migration from Beans
 
@@ -123,20 +161,25 @@ Tasks were imported via `migrate-beans.js`. Original IDs preserved as `clawd-<ha
 
 ### Testing
 ```bash
-# Test Automerge store
-node test-automerge.js
+# Unit tests (node:test suites under test/)
+npm test
 
-# Test real-time sync
+# Smoke scripts (manual/runtime checks)
+npm run smoke:automerge
+npm run smoke:cli
+
+# Report against an existing migrated document URL
+MC_TEST_DOC_URL="<automerge-url>" npm run smoke:migrated
+
+# Demo real-time sync behavior
 node demo-realtime.js
-
-# Test CLI integration
-node test-cli-integration.js
 ```
 
 ### Sync Server
 ```bash
 # Start sync server (runs on 8004/8005)
-node automerge-sync-server.js
+export MC_API_TOKEN="$(openssl rand -hex 32)"
+MC_API_TOKEN="$MC_API_TOKEN" npm run sync
 ```
 
 ## Roadmap

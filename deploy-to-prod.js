@@ -5,13 +5,18 @@
  * Replaces existing tasks dashboard with spatial kanban interface
  */
 
+const prodUrl = process.env.MC_DEPLOY_PROD_URL || 'http://localhost:8000/tasks/'
+const localUrl = process.env.MC_DEPLOY_LOCAL_URL || 'http://localhost:8000/tasks/'
+const deployPath = process.env.MC_DEPLOY_PATH || '/var/www/html/tasks/'
+const backupPath = process.env.MC_DEPLOY_BACKUP_PATH || '/var/www/html/tasks.backup.[timestamp]'
+
 console.log('🚀 MISSION CONTROL DEPLOYMENT TO PRODUCTION\n')
 
 console.log('✅ DEPLOYMENT COMPLETED!')
 console.log('')
 console.log('📍 **Live URLs:**')
-console.log('   🌐 http://gary-clawd-bot.exe.xyz:8000/tasks/')
-console.log('   🔗 http://localhost:8000/tasks/ (server local)')
+console.log(`   🌐 ${prodUrl}`)
+console.log(`   🔗 ${localUrl} (server local)`)
 console.log('')
 
 console.log('🎯 **What was deployed:**')
@@ -24,11 +29,11 @@ console.log('')
 
 console.log('🔄 **Replaced:**')
 console.log('   📋 Old static tasks dashboard → Spatial Mission Control')
-console.log('   🗂️  Backup saved to: /var/www/html/tasks.backup.[timestamp]')
+console.log(`   🗂️  Backup saved to: ${backupPath}`)
 console.log('')
 
 console.log('🎮 **How to use:**')
-console.log('   1. Open: http://gary-clawd-bot.exe.xyz:8000/tasks/')
+console.log(`   1. Open: ${prodUrl}`)
 console.log('   2. Multiple tabs = Real-time collaboration testing')
 console.log('   3. Drag task cards around the infinite canvas')
 console.log('   4. Watch live updates in header statistics')
@@ -36,7 +41,7 @@ console.log('')
 
 console.log('🔧 **Technical details:**')
 console.log('   📦 Built with: Vite + React + tldraw + Automerge')
-console.log('   🌐 Served from: /var/www/html/tasks/')
+console.log(`   🌐 Served from: ${deployPath}`)
 console.log('   🔄 Real-time: BroadcastChannel + IndexedDB storage')
 console.log('   📊 Data: Your real migrated .beans tasks')
 console.log('')
@@ -59,9 +64,9 @@ console.log('')
 console.log('🎉 The spatial kanban interface is LIVE and ready for use!')
 
 export default {
-  prodUrl: 'http://gary-clawd-bot.exe.xyz:8000/tasks/',
-  localUrl: 'http://localhost:8000/tasks/',
-  deployPath: '/var/www/html/tasks/',
+  prodUrl,
+  localUrl,
+  deployPath,
   status: 'deployed',
   features: [
     'Spatial kanban with infinite canvas',
