@@ -3,6 +3,15 @@ import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
 // Global lastSeen state (single user, synced across all devices via Automerge)
+const API_TOKEN = import.meta.env.VITE_MC_API_TOKEN || null
+
+function withAuthHeaders(headers = {}) {
+  if (!API_TOKEN) return { ...headers }
+  return {
+    ...headers,
+    Authorization: `Bearer ${API_TOKEN}`
+  }
+}
 
 const PRIORITIES = [
   { value: 'p0', label: 'P0', color: '#ef4444' },
@@ -38,7 +47,8 @@ export default function MissionControlSync() {
     if (wsRef.current) wsRef.current.close()
     try {
       const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-      const ws = new WebSocket(`${wsProtocol}//${window.location.host}/mc-ws`)
+      const tokenQuery = API_TOKEN ? `?token=${encodeURIComponent(API_TOKEN)}` : ''
+      const ws = new WebSocket(`${wsProtocol}//${window.location.host}/mc-ws${tokenQuery}`)
       wsRef.current = ws
       ws.onopen = () => { setConnected(true); setError(null) }
       ws.onmessage = (event) => {
@@ -127,6 +137,12 @@ export default function MissionControlSync() {
           <button className="mc-header-add" style={styles.addBtn} onClick={() => setShowNewTask(true)}>+ New</button>
         </div>
       </header>
+
+      {error && (
+        <div style={styles.errorBanner}>
+          {error}
+        </div>
+      )}
       
       {/* Mobile column tabs */}
       <div className="mc-mobile-tabs">
@@ -294,7 +310,7 @@ function TaskDetailModal({ task, comments, agents, onClose, onUpdate, onComment 
       // Sync to server (global lastSeen, single user)
       fetch('/mc-api/automerge/last-seen', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: withAuthHeaders({ 'Content-Type': 'application/json' }),
         body: JSON.stringify({ taskId: task.id, timestamp: latestTimestamp })
       }).catch(() => {})
     }
@@ -497,6 +513,7 @@ const styles = {
   stat: { fontSize: 13, color: '#666' },
   connectionDot: { width: 8, height: 8, borderRadius: '50%' },
   addBtn: { background: '#fff', color: '#0a0a0a', border: 'none', borderRadius: 6, padding: '8px 14px', fontSize: 13, fontWeight: 500, cursor: 'pointer' },
+  errorBanner: { margin: '12px 20px 0', padding: '10px 12px', borderRadius: 8, border: '1px solid #ef4444', color: '#fecaca', background: 'rgba(127, 29, 29, 0.35)', fontSize: 13 },
   
   columnHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 20px', borderBottom: '1px solid #1a1a1a' },
   columnTitle: { fontSize: 13, fontWeight: 500, color: '#888', textTransform: 'uppercase', letterSpacing: '0.05em' },

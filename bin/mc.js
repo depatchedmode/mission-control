@@ -32,11 +32,20 @@
 import { AutomergeStore } from '../lib/automerge-store.js';
 import * as agentTrace from '../lib/agent-trace.js';
 
-const API_BASE = 'http://localhost:8004';
+const API_BASE = process.env.MC_SYNC_SERVER || `http://localhost:${process.env.MC_HTTP_PORT || '8004'}`;
+const API_TOKEN = process.env.MC_API_TOKEN || null;
 const rawArgs = process.argv.slice(2);
 const args = rawArgs;
 const command = args[0];
 const subcommand = args[1];
+
+function withAuthHeaders(headers = {}) {
+  if (!API_TOKEN) return { ...headers };
+  return {
+    ...headers,
+    Authorization: `Bearer ${API_TOKEN}`
+  };
+}
 
 // Extract positional args (skip --flag value pairs)
 function positionalArgs() {
@@ -63,7 +72,9 @@ async function getStore() {
 
 // HTTP client for sync server
 async function apiGet(path) {
-  const res = await fetch(`${API_BASE}${path}`);
+  const res = await fetch(`${API_BASE}${path}`, {
+    headers: withAuthHeaders()
+  });
   if (!res.ok) throw new Error(`API error: ${res.status}`);
   return res.json();
 }
@@ -71,7 +82,7 @@ async function apiGet(path) {
 async function apiPost(path, body) {
   const res = await fetch(`${API_BASE}${path}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: withAuthHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(body)
   });
   if (!res.ok) {
@@ -248,7 +259,10 @@ async function main() {
         process.exit(1);
       }
       
-      const res = await fetch(`${API_BASE}/automerge/comment/${commentId}`, { method: 'DELETE' });
+      const res = await fetch(`${API_BASE}/automerge/comment/${commentId}`, {
+        method: 'DELETE',
+        headers: withAuthHeaders()
+      });
       const data = await res.json();
       if (data.success) {
         console.log(`Deleted comment ${commentId}`);
@@ -627,7 +641,7 @@ async function main() {
       try {
         const res = await fetch(`${API_BASE}/automerge/task/${taskId}`, {
           method: 'PATCH',
-          headers: { 'Content-Type': 'application/json' },
+          headers: withAuthHeaders({ 'Content-Type': 'application/json' }),
           body: JSON.stringify(updates)
         });
         

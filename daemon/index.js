@@ -7,10 +7,19 @@
  * Polls for pending mentions and delivers via OpenClaw cron wake.
  */
 
-const SYNC_SERVER = 'http://localhost:8004';
+const SYNC_SERVER = process.env.MC_SYNC_SERVER || `http://localhost:${process.env.MC_HTTP_PORT || '8004'}`;
 const POLL_INTERVAL_MS = 3000;
 const DRY_RUN = process.argv.includes('--dry-run');
 const VERBOSE = process.argv.includes('--verbose');
+const API_TOKEN = process.env.MC_API_TOKEN || null;
+
+function withAuthHeaders(headers = {}) {
+  if (!API_TOKEN) return { ...headers };
+  return {
+    ...headers,
+    Authorization: `Bearer ${API_TOKEN}`
+  };
+}
 
 function log(msg) {
   const ts = new Date().toISOString().substring(11, 19);
@@ -22,7 +31,9 @@ function debug(msg) {
 }
 
 async function getDocument() {
-  const res = await fetch(`${SYNC_SERVER}/automerge/doc`);
+  const res = await fetch(`${SYNC_SERVER}/automerge/doc`, {
+    headers: withAuthHeaders()
+  });
   if (!res.ok) throw new Error(`Sync server error: ${res.status}`);
   const data = await res.json();
   return data.doc;
@@ -30,7 +41,8 @@ async function getDocument() {
 
 async function markDelivered(mentionId) {
   const res = await fetch(`${SYNC_SERVER}/automerge/mentions/${mentionId}/deliver`, {
-    method: 'POST'
+    method: 'POST',
+    headers: withAuthHeaders()
   });
   if (!res.ok) throw new Error(`Failed to mark delivered: ${res.status}`);
 }
@@ -39,7 +51,9 @@ async function getPendingMentions(agent = null) {
   const url = agent 
     ? `${SYNC_SERVER}/automerge/mentions/pending?agent=${agent}`
     : `${SYNC_SERVER}/automerge/mentions/pending`;
-  const res = await fetch(url);
+  const res = await fetch(url, {
+    headers: withAuthHeaders()
+  });
   if (!res.ok) throw new Error(`Failed to get mentions: ${res.status}`);
   const data = await res.json();
   return data.mentions;

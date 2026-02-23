@@ -12,8 +12,32 @@ import { AutomergeStore } from './lib/automerge-store.js'
 import express from 'express'
 import cors from 'cors'
 
-const PORT = 8004
-const WS_PORT = 8005
+const DEFAULT_HTTP_PORT = 8004
+const DEFAULT_WS_PORT = 8005
+
+function defaultAllowedOrigins(httpPort) {
+  return [
+    'http://localhost:5174',
+    'http://127.0.0.1:5174',
+    `http://localhost:${httpPort}`,
+    `http://127.0.0.1:${httpPort}`
+  ]
+}
+
+function parseAllowedOrigins(value, defaults) {
+  if (!value) return new Set(defaults)
+  return new Set(
+    value
+      .split(',')
+      .map(origin => origin.trim())
+      .filter(Boolean)
+  )
+}
+
+function getBearerToken(authorizationHeader = '') {
+  if (!authorizationHeader.startsWith('Bearer ')) return null
+  return authorizationHeader.slice('Bearer '.length).trim()
+}
 
 class AutomergeSyncServer {
   constructor() {
@@ -21,6 +45,29 @@ class AutomergeSyncServer {
     this.connectedClients = new Set()
     this.app = express()
     this.wss = null
+    this.httpServer = null
+    this.host = process.env.MC_BIND_HOST || '127.0.0.1'
+    this.httpPort = Number.parseInt(process.env.MC_HTTP_PORT || `${DEFAULT_HTTP_PORT}`, 10)
+    this.wsPort = Number.parseInt(process.env.MC_WS_PORT || `${DEFAULT_WS_PORT}`, 10)
+    this.apiToken = process.env.MC_API_TOKEN || ''
+    this.allowInsecureLocal = process.env.MC_ALLOW_INSECURE_LOCAL === '1'
+    this.allowedOrigins = parseAllowedOrigins(
+      process.env.MC_ALLOWED_ORIGINS || '',
+      defaultAllowedOrigins(this.httpPort)
+    )
+
+    if (!Number.isInteger(this.httpPort) || this.httpPort <= 0) {
+      throw new Error(`Invalid MC_HTTP_PORT: ${process.env.MC_HTTP_PORT}`)
+    }
+    if (!Number.isInteger(this.wsPort) || this.wsPort <= 0) {
+      throw new Error(`Invalid MC_WS_PORT: ${process.env.MC_WS_PORT}`)
+    }
+
+    if (!this.apiToken && !this.allowInsecureLocal) {
+      throw new Error(
+        'MC_API_TOKEN is required. To bypass for local-only testing, set MC_ALLOW_INSECURE_LOCAL=1.'
+      )
+    }
   }
   
   async start() {
@@ -37,19 +84,65 @@ class AutomergeSyncServer {
     this.setupWebSocketServer()
     
     // Start HTTP server
-    this.app.listen(PORT, () => {
-      console.log(`📡 HTTP API listening on port ${PORT}`)
-      console.log(`🌐 WebSocket sync on port ${WS_PORT}`)
-      console.log(`🔗 Frontend should connect to ws://localhost:${WS_PORT}`)
+    this.httpServer = this.app.listen(this.httpPort, this.host, () => {
+      console.log(`📡 HTTP API listening on ${this.host}:${this.httpPort}`)
+      console.log(`🌐 WebSocket sync on ${this.host}:${this.wsPort}`)
+      console.log(`🔐 Auth mode: ${this.apiToken ? 'token required' : 'disabled (unsafe local mode)'}`)
+      console.log(`🌍 Allowed CORS origins: ${this.allowedOrigins.size === 0 ? '(none)' : [...this.allowedOrigins].join(', ')}`)
     })
     
     // Register default agents if not exists
     await this.initializeDefaultAgents()
   }
+
+  isAllowedOrigin(origin) {
+    if (!origin) return true
+    if (this.allowedOrigins.has('*')) return true
+    return this.allowedOrigins.has(origin)
+  }
+
+  tokenFromRequest(req) {
+    const bearerToken = getBearerToken(req.headers?.authorization || '')
+    if (bearerToken) return bearerToken
+
+    const headerToken = req.headers?.['x-mc-token']
+    if (headerToken) return String(headerToken)
+
+    try {
+      const url = new URL(req.url || '', `http://${this.host}:${this.httpPort}`)
+      const queryToken = url.searchParams.get('token')
+      if (queryToken) return queryToken
+    } catch {
+      // Ignore malformed URL values and continue unauthenticated.
+    }
+
+    return null
+  }
+
+  isAuthorizedRequest(req) {
+    if (!this.apiToken) return true
+    const token = this.tokenFromRequest(req)
+    return token === this.apiToken
+  }
+
+  authMiddleware(req, res, next) {
+    if (this.isAuthorizedRequest(req)) {
+      return next()
+    }
+    return res.status(401).json({ error: 'Unauthorized' })
+  }
   
   setupHTTPAPI() {
-    this.app.use(cors())
+    this.app.use(cors({
+      origin: (origin, callback) => {
+        if (this.isAllowedOrigin(origin)) {
+          return callback(null, true)
+        }
+        return callback(new Error(`Origin not allowed by CORS policy: ${origin}`))
+      }
+    }))
     this.app.use(express.json())
+    this.app.use((req, res, next) => this.authMiddleware(req, res, next))
     
     // Get current document state
     this.app.get('/automerge/doc', async (req, res) => {
@@ -249,7 +342,6 @@ class AutomergeSyncServer {
         }
         
         const changes = []
-        const oldTask = doc.tasks[taskId]
         
         await this.store.docHandle.change(doc => {
           if (status && doc.tasks[taskId].status !== status) {
@@ -361,9 +453,15 @@ class AutomergeSyncServer {
   }
   
   setupWebSocketServer() {
-    this.wss = new WebSocketServer({ port: WS_PORT })
+    this.wss = new WebSocketServer({ port: this.wsPort, host: this.host })
     
-    this.wss.on('connection', (ws) => {
+    this.wss.on('connection', (ws, req) => {
+      if (!this.isAuthorizedRequest(req)) {
+        ws.send(JSON.stringify({ type: 'error', error: 'Unauthorized' }))
+        ws.close(1008, 'Unauthorized')
+        return
+      }
+
       console.log('🔌 Frontend client connected')
       this.connectedClients.add(ws)
       
