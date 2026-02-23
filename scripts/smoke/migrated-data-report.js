@@ -4,15 +4,21 @@
  * Test Mission Control with real migrated data
  */
 
-import { AutomergeStore } from './lib/automerge-store.js'
+import { AutomergeStore } from '../../lib/automerge-store.js'
 
 async function testMigratedData() {
   console.log('🎯 TESTING MISSION CONTROL WITH REAL PROJECT DATA\n')
   
+  const docUrl = process.env.MC_TEST_DOC_URL
+  if (!docUrl) {
+    console.error('❌ MC_TEST_DOC_URL is required for this integration script')
+    process.exit(1)
+  }
+
   // Connect to the migrated document
   const store = new AutomergeStore()
-  store.docHandle = store.repo.find('automerge:2stqEG7dUgYF7Qj4Ku9WEnCWnLxJ')
-  await new Promise(resolve => setTimeout(resolve, 1000)) // Allow sync
+  store.docHandle = await store.repo.find(docUrl)
+  store.initialized = true
   
   const doc = store.getDoc()
   

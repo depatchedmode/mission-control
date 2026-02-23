@@ -5,7 +5,7 @@
  * Shows how current CLI commands could work with new store
  */
 
-import { AutomergeStore } from './lib/automerge-store.js'
+import { AutomergeStore } from '../../lib/automerge-store.js'
 
 async function testCliIntegration() {
   console.log('🔧 Testing MC CLI Integration with Automerge Backend\n')

@@ -5,7 +5,7 @@
  * Verifies core functionality and real-time sync capabilities
  */
 
-import { AutomergeStore } from './lib/automerge-store.js'
+import { AutomergeStore } from '../../lib/automerge-store.js'
 
 async function test() {
   console.log('🧪 Testing Automerge Mission Control Store...\n')
