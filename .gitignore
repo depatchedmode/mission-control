@@ -2,3 +2,4 @@ node_modules/
 .mission-control/
 *.log
 .agent-trace/
+ui-prototype/dist/
