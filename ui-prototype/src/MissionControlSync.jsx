@@ -166,7 +166,7 @@ export default function MissionControlSync() {
       {/* Mobile FAB */}
       <button className="mc-fab" onClick={() => setShowNewTask(true)}>+</button>
       </>) : (
-        <ActivityView doc={doc} tasks={tasks} onSelectTask={setSelectedTask} />
+        <ActivityView doc={doc} onSelectTask={setSelectedTask} />
       )}
       
       {showNewTask && <NewTaskModal onClose={() => setShowNewTask(false)} onCreate={createTask} />}
@@ -521,8 +521,8 @@ function TaskDetailModal({ task, comments, agents, onClose, onUpdate, onComment,
   )
 }
 
-function ActivityView({ doc, tasks, onSelectTask }) {
-  const activity = (doc.activity || [])
+function ActivityView({ doc, onSelectTask }) {
+  const activity = [...(doc.activity || [])]
     .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
     .slice(0, 50)
   
