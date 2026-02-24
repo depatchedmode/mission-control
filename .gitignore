@@ -1,7 +1,7 @@
 node_modules/
 .mission-control/
 .mission-control-url
-ui-prototype/node_modules/
-ui-prototype/dist/
 *.log
 .agent-trace/
+ui-prototype/node_modules/
+ui-prototype/dist/

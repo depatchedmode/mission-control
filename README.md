@@ -158,7 +158,7 @@ Optional compatibility setting:
 
 ## Migration from Beans
 
-Tasks were imported via `migrate-beans.js`. Original IDs preserved as `clawd-<hash>`. Beans is now deprecated.
+Tasks were imported during the initial migration phase. Original IDs were preserved as `clawd-<hash>`. Beans is now deprecated.
 
 ## Development
 
@@ -173,9 +173,6 @@ npm run smoke:cli
 
 # Report against an existing migrated document URL
 MC_TEST_DOC_URL="<automerge-url>" npm run smoke:migrated
-
-# Demo real-time sync behavior
-node demo-realtime.js
 ```
 
 ### Sync Server

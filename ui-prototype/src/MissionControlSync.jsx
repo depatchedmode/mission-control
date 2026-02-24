@@ -29,6 +29,7 @@ export default function MissionControlSync() {
   const [selectedTask, setSelectedTask] = useState(null)
   const [draggedTask, setDraggedTask] = useState(null)
   const [mobileActiveColumn, setMobileActiveColumn] = useState('in-progress')
+  const [view, setView] = useState('board') // 'board' or 'activity'
   const wsRef = useRef(null)
   
   useEffect(() => {
@@ -150,6 +151,10 @@ export default function MissionControlSync() {
         <h1 style={styles.logo}>Mission Control</h1>
         <div style={styles.headerMeta}>
           <span style={styles.stat}>{tasks.length} tasks</span>
+          <button style={{ ...styles.viewToggle, ...(view === 'activity' ? styles.viewToggleActive : {}) }}
+            onClick={() => setView(view === 'board' ? 'activity' : 'board')}>
+            {view === 'board' ? '📋 Activity' : '📊 Board'}
+          </button>
           <span style={{ ...styles.connectionDot, background: connected ? '#10b981' : '#ef4444' }} />
           <button className="mc-header-add" style={styles.addBtn} onClick={() => setShowNewTask(true)}>+ New</button>
         </div>
@@ -161,6 +166,7 @@ export default function MissionControlSync() {
         </div>
       )}
       
+      {view === 'board' ? (<>
       {/* Mobile column tabs */}
       <div className="mc-mobile-tabs">
         {[
@@ -192,6 +198,9 @@ export default function MissionControlSync() {
       
       {/* Mobile FAB */}
       <button className="mc-fab" onClick={() => setShowNewTask(true)}>+</button>
+      </>) : (
+        <ActivityView doc={doc} onSelectTask={setSelectedTask} />
+      )}
       
       {showNewTask && <NewTaskModal onClose={() => setShowNewTask(false)} onCreate={createTask} />}
       
@@ -200,6 +209,7 @@ export default function MissionControlSync() {
           task={selectedTask} 
           comments={getTaskComments(selectedTask.id)}
           agents={agents}
+          taskHistory={(doc.taskHistory || {})[selectedTask.id] || []}
           onClose={() => setSelectedTask(null)}
           onUpdate={updateTask}
           onComment={addComment}
@@ -310,7 +320,7 @@ function NewTaskModal({ onClose, onCreate }) {
   )
 }
 
-function TaskDetailModal({ task, comments, agents, onClose, onUpdate, onComment }) {
+function TaskDetailModal({ task, comments, agents, onClose, onUpdate, onComment, taskHistory }) {
   const [commentText, setCommentText] = useState('')
   const [showMentions, setShowMentions] = useState(false)
   const [mentionFilter, setMentionFilter] = useState('')
@@ -467,6 +477,32 @@ function TaskDetailModal({ task, comments, agents, onClose, onUpdate, onComment 
             </div>
           )}
           
+          {/* Commits linked via Agent Trace */}
+          {(() => {
+            const commits = (taskHistory || []).filter(h => h.type === 'commit')
+            if (commits.length === 0) return null
+            return (
+              <div style={styles.commitsSection}>
+                <h3 style={styles.sectionTitle}>🔗 Commits ({commits.length})</h3>
+                <div style={styles.commitsList}>
+                  {commits.map((c, i) => (
+                    <div key={i} style={styles.commitEntry}>
+                      <div style={styles.commitHeader}>
+                        <code style={styles.commitHash}>{c.commit.shortHash}</code>
+                        <span style={styles.commitAgent}>@{c.agent}</span>
+                        <span style={styles.commentTime}>{formatTime(c.timestamp)}</span>
+                      </div>
+                      <div style={styles.commitMessage}>{c.commit.message.split('\n')[0]}</div>
+                      {c.commit.diff?.shortstat && (
+                        <div style={styles.commitDiff}>{c.commit.diff.shortstat}</div>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )
+          })()}
+
           <div style={styles.commentsSection}>
             <div style={styles.commentsSectionHeader}>
               <h3 style={styles.sectionTitle}>Comments {comments.length > 0 && `(${comments.length})`}</h3>
@@ -512,6 +548,98 @@ function TaskDetailModal({ task, comments, agents, onClose, onUpdate, onComment 
               <button type="submit" style={styles.btnPrimary} disabled={!commentText.trim()}>Send</button>
             </form>
           </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function ActivityView({ doc, onSelectTask }) {
+  const activity = [...(doc.activity || [])]
+    .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
+    .slice(0, 50)
+  
+  // Also gather all commits across tasks
+  const allCommits = []
+  for (const [taskId, history] of Object.entries(doc.taskHistory || {})) {
+    for (const entry of history) {
+      if (entry.type === 'commit') {
+        const task = (doc.tasks || {})[taskId]
+        allCommits.push({ ...entry, taskId, taskTitle: task?.title || taskId })
+      }
+    }
+  }
+  allCommits.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
+  
+  const formatTime = (ts) => {
+    const d = new Date(ts), now = new Date(), diff = now - d
+    if (diff < 60000) return 'just now'
+    if (diff < 3600000) return `${Math.floor(diff/60000)}m ago`
+    if (diff < 86400000) return `${Math.floor(diff/3600000)}h ago`
+    return d.toLocaleDateString()
+  }
+  
+  const icons = {
+    'comment_added': '💬',
+    'task_created': '📋',
+    'task_updated': '✏️',
+    'task_branched': '🌿',
+    'task_merged': '🔀',
+    'agent_registered': '🤖',
+    'status_changed': '🔄',
+    'commit_linked': '🔗',
+  }
+  
+  return (
+    <div style={styles.activityContainer}>
+      {/* Commits section */}
+      {allCommits.length > 0 && (
+        <div style={styles.activityPanel}>
+          <h2 style={styles.activityPanelTitle}>🔗 Recent Commits</h2>
+          <div style={styles.activityList}>
+            {allCommits.slice(0, 20).map((c, i) => (
+              <div key={i} style={styles.activityCommit}
+                onClick={() => {
+                  const task = (doc.tasks || {})[c.taskId]
+                  if (task) onSelectTask(task)
+                }}>
+                <div style={styles.activityCommitTop}>
+                  <code style={styles.commitHash}>{c.commit.shortHash}</code>
+                  <span style={styles.commitAgent}>@{c.agent}</span>
+                  <span style={styles.activityTime}>{formatTime(c.timestamp)}</span>
+                </div>
+                <div style={styles.commitMessage}>{c.commit.message.split('\n')[0]}</div>
+                <div style={styles.activityTaskLink}>→ {c.taskTitle}</div>
+                {c.commit.diff?.shortstat && (
+                  <div style={styles.commitDiff}>{c.commit.diff.shortstat}</div>
+                )}
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+      
+      {/* Activity feed */}
+      <div style={styles.activityPanel}>
+        <h2 style={styles.activityPanelTitle}>📋 Activity Feed</h2>
+        <div style={styles.activityList}>
+          {activity.map((entry, i) => {
+            const taskId = entry.task_id || entry.taskId
+            const task = taskId ? (doc.tasks || {})[taskId] : null
+            
+            return (
+              <div key={entry.id || i} style={styles.activityItem}
+                onClick={() => task && onSelectTask(task)}>
+                <div style={styles.activityItemTop}>
+                  <span>{icons[entry.type] || '●'}</span>
+                  <span style={styles.commitAgent}>@{entry.agent || 'system'}</span>
+                  <span style={styles.activityTime}>{formatTime(entry.timestamp)}</span>
+                </div>
+                {task && <div style={styles.activityTaskLink}>{task.title}</div>}
+                {entry.details && <div style={styles.activityDetails}>{entry.details}</div>}
+              </div>
+            )
+          })}
         </div>
       </div>
     </div>
@@ -593,6 +721,33 @@ const styles = {
   mdTh: { padding: '8px 12px', textAlign: 'left', color: '#888', fontWeight: 500 },
   mdTd: { padding: '8px 12px', color: '#ccc' },
   
+  // View toggle
+  viewToggle: { background: '#1a1a1a', border: '1px solid #333', color: '#888', borderRadius: 6, padding: '6px 12px', fontSize: 13, cursor: 'pointer', fontWeight: 500 },
+  viewToggleActive: { background: '#1a2332', borderColor: '#58a6ff', color: '#58a6ff' },
+  
+  // Activity view
+  activityContainer: { padding: '20px', maxWidth: 800, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 24 },
+  activityPanel: { background: '#111', border: '1px solid #1a1a1a', borderRadius: 12, padding: 20, overflow: 'hidden' },
+  activityPanelTitle: { fontSize: 16, fontWeight: 600, color: '#fff', margin: '0 0 16px 0' },
+  activityList: { display: 'flex', flexDirection: 'column', gap: 8 },
+  activityCommit: { background: '#0d1117', border: '1px solid #1a2332', borderRadius: 8, padding: '12px 16px', cursor: 'pointer', transition: 'border-color 0.15s' },
+  activityCommitTop: { display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 },
+  activityTime: { fontSize: 12, color: '#444', marginLeft: 'auto' },
+  activityTaskLink: { fontSize: 12, color: '#58a6ff', marginTop: 4 },
+  activityItem: { background: '#0a0a0a', border: '1px solid #1a1a1a', borderRadius: 8, padding: '10px 14px', cursor: 'pointer' },
+  activityItemTop: { display: 'flex', alignItems: 'center', gap: 8 },
+  activityDetails: { fontSize: 13, color: '#888', marginTop: 4 },
+
+  // Commits section
+  commitsSection: { marginTop: 24, marginBottom: 8 },
+  commitsList: { display: 'flex', flexDirection: 'column', gap: 8 },
+  commitEntry: { background: '#0d1117', border: '1px solid #1a2332', borderRadius: 8, padding: '12px 16px' },
+  commitHeader: { display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 },
+  commitHash: { fontSize: 13, fontWeight: 600, color: '#58a6ff', background: '#0d1117', padding: '2px 6px', borderRadius: 4, fontFamily: 'monospace' },
+  commitAgent: { fontSize: 13, color: '#10b981', fontWeight: 500 },
+  commitMessage: { fontSize: 14, color: '#ccc', lineHeight: 1.4 },
+  commitDiff: { fontSize: 12, color: '#666', marginTop: 4, fontFamily: 'monospace' },
+
   commentsSection: { marginTop: 24 },
   commentsSectionHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 },
   sectionTitle: { fontSize: 14, fontWeight: 500, color: '#888', textTransform: 'uppercase', letterSpacing: '0.05em', margin: 0 },
