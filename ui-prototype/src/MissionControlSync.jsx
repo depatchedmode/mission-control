@@ -47,8 +47,8 @@ export default function MissionControlSync() {
     if (wsRef.current) wsRef.current.close()
     try {
       const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
-      const tokenQuery = API_TOKEN ? `?token=${encodeURIComponent(API_TOKEN)}` : ''
-      const ws = new WebSocket(`${wsProtocol}//${window.location.host}/mc-ws${tokenQuery}`)
+      const ticketQuery = API_TOKEN ? `?ticket=${encodeURIComponent(await requestWebSocketTicket())}` : ''
+      const ws = new WebSocket(`${wsProtocol}//${window.location.host}/mc-ws${ticketQuery}`)
       wsRef.current = ws
       ws.onopen = () => { setConnected(true); setError(null) }
       ws.onmessage = (event) => {
@@ -65,6 +65,23 @@ export default function MissionControlSync() {
       ws.onclose = () => { setConnected(false); setTimeout(connectToSyncServer, 3000) }
       ws.onerror = () => setError('Connection failed')
     } catch (error) { setError(error.message); setLoading(false) }
+  }
+
+  const requestWebSocketTicket = async () => {
+    const response = await fetch('/mc-api/automerge/ws-ticket', {
+      method: 'POST',
+      headers: withAuthHeaders({
+        'Content-Type': 'application/json'
+      })
+    })
+    if (!response.ok) {
+      throw new Error(`WebSocket auth ticket request failed (${response.status})`)
+    }
+    const payload = await response.json()
+    if (!payload?.ticket) {
+      throw new Error('WebSocket auth ticket response missing ticket')
+    }
+    return payload.ticket
   }
   
   const sendChange = useCallback((change) => {

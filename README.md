@@ -151,7 +151,10 @@ Optional environment settings:
 - `MC_SYNC_SERVER` (CLI/daemon API base URL override, e.g. `http://127.0.0.1:9000`)
 - `MC_ALLOW_INSECURE_LOCAL=1` (disables auth; local testing only)
 
-For the Vite UI, set `VITE_MC_API_TOKEN` in `ui-prototype/.env.local`.
+For the Vite UI, set `VITE_MC_API_TOKEN` in `ui-prototype/.env.local`. The UI now exchanges that token for a short-lived one-time WebSocket ticket via `/mc-api/automerge/ws-ticket`, so long-lived tokens are not placed in WS URLs.
+
+Optional compatibility setting:
+- `MC_ALLOW_LEGACY_WS_QUERY_TOKEN=1` (temporarily allow `?token=` WebSocket auth for old clients; disabled by default)
 
 ## Migration from Beans
 

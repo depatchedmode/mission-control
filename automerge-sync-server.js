@@ -11,6 +11,7 @@ import { WebSocketServer } from 'ws'
 import { AutomergeStore } from './lib/automerge-store.js'
 import express from 'express'
 import cors from 'cors'
+import crypto from 'crypto'
 
 const DEFAULT_HTTP_PORT = 8004
 const DEFAULT_WS_PORT = 8005
@@ -51,6 +52,9 @@ class AutomergeSyncServer {
     this.wsPort = Number.parseInt(process.env.MC_WS_PORT || `${DEFAULT_WS_PORT}`, 10)
     this.apiToken = process.env.MC_API_TOKEN || ''
     this.allowInsecureLocal = process.env.MC_ALLOW_INSECURE_LOCAL === '1'
+    this.allowLegacyWsQueryToken = process.env.MC_ALLOW_LEGACY_WS_QUERY_TOKEN === '1'
+    this.wsTicketTtlMs = Number.parseInt(process.env.MC_WS_TICKET_TTL_MS || '60000', 10)
+    this.wsTickets = new Map()
     this.allowedOrigins = parseAllowedOrigins(
       process.env.MC_ALLOWED_ORIGINS || '',
       defaultAllowedOrigins(this.httpPort)
@@ -67,6 +71,9 @@ class AutomergeSyncServer {
       throw new Error(
         'MC_API_TOKEN is required. To bypass for local-only testing, set MC_ALLOW_INSECURE_LOCAL=1.'
       )
+    }
+    if (!Number.isInteger(this.wsTicketTtlMs) || this.wsTicketTtlMs <= 0) {
+      throw new Error(`Invalid MC_WS_TICKET_TTL_MS: ${process.env.MC_WS_TICKET_TTL_MS}`)
     }
   }
   
@@ -108,10 +115,24 @@ class AutomergeSyncServer {
     const headerToken = req.headers?.['x-mc-token']
     if (headerToken) return String(headerToken)
 
+    if (this.allowLegacyWsQueryToken) {
+      try {
+        const url = new URL(req.url || '', `http://${this.host}:${this.httpPort}`)
+        const queryToken = url.searchParams.get('token')
+        if (queryToken) return queryToken
+      } catch {
+        // Ignore malformed URL values and continue unauthenticated.
+      }
+    }
+
+    return null
+  }
+
+  wsTicketFromRequest(req) {
     try {
       const url = new URL(req.url || '', `http://${this.host}:${this.httpPort}`)
-      const queryToken = url.searchParams.get('token')
-      if (queryToken) return queryToken
+      const ticket = url.searchParams.get('ticket')
+      if (ticket) return ticket
     } catch {
       // Ignore malformed URL values and continue unauthenticated.
     }
@@ -119,10 +140,41 @@ class AutomergeSyncServer {
     return null
   }
 
+  mintWsTicket() {
+    const ticket = crypto.randomBytes(32).toString('hex')
+    this.wsTickets.set(ticket, Date.now() + this.wsTicketTtlMs)
+    return ticket
+  }
+
+  consumeWsTicket(ticket) {
+    if (!ticket) return false
+    const expiresAt = this.wsTickets.get(ticket)
+    if (!expiresAt) return false
+    this.wsTickets.delete(ticket)
+    return expiresAt > Date.now()
+  }
+
+  cleanupExpiredWsTickets() {
+    const now = Date.now()
+    for (const [ticket, expiresAt] of this.wsTickets) {
+      if (expiresAt <= now) this.wsTickets.delete(ticket)
+    }
+  }
+
   isAuthorizedRequest(req) {
     if (!this.apiToken) return true
     const token = this.tokenFromRequest(req)
     return token === this.apiToken
+  }
+
+  isAuthorizedWebSocketRequest(req) {
+    if (!this.apiToken) return true
+
+    const token = this.tokenFromRequest(req)
+    if (token === this.apiToken) return true
+
+    const ticket = this.wsTicketFromRequest(req)
+    return this.consumeWsTicket(ticket)
   }
 
   authMiddleware(req, res, next) {
@@ -197,6 +249,16 @@ class AutomergeSyncServer {
         this.broadcastDocumentUpdate()
         
         res.json({ success: true, commentId })
+      } catch (error) {
+        res.status(500).json({ error: error.message })
+      }
+    })
+
+    this.app.post('/automerge/ws-ticket', async (req, res) => {
+      try {
+        this.cleanupExpiredWsTickets()
+        const ticket = this.mintWsTicket()
+        res.json({ success: true, ticket, expiresInMs: this.wsTicketTtlMs })
       } catch (error) {
         res.status(500).json({ error: error.message })
       }
@@ -456,7 +518,7 @@ class AutomergeSyncServer {
     this.wss = new WebSocketServer({ port: this.wsPort, host: this.host })
     
     this.wss.on('connection', (ws, req) => {
-      if (!this.isAuthorizedRequest(req)) {
+      if (!this.isAuthorizedWebSocketRequest(req)) {
         ws.send(JSON.stringify({ type: 'error', error: 'Unauthorized' }))
         ws.close(1008, 'Unauthorized')
         return
