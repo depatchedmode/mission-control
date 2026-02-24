@@ -4,7 +4,7 @@
 
 ### Phase 1: Core Infrastructure
 - [x] Automerge CRDT storage (`lib/automerge-store.js`)
-- [x] Task migration from beans (`migrate-beans.js`)
+- [x] Task migration from beans (historical migration phase)
 - [x] CLI with full task management (`bin/mc.js`)
 - [x] Comments with @mentions
 - [x] Activity feed and timeline

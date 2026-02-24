@@ -117,20 +117,14 @@ Document URL stored in `.mission-control-url`. The sync server on ports 8004/800
 
 ## Migration from Beans
 
-Tasks were imported via `migrate-beans.js`. Original IDs preserved as `clawd-<hash>`. Beans is now deprecated.
+Tasks were imported during the initial migration phase. Original IDs were preserved as `clawd-<hash>`. Beans is now deprecated.
 
 ## Development
 
 ### Testing
 ```bash
-# Test Automerge store
-node test-automerge.js
-
-# Test real-time sync
-node demo-realtime.js
-
-# Test CLI integration
-node test-cli-integration.js
+# Run all tests
+npm test
 ```
 
 ### Sync Server
