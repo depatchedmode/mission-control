@@ -153,9 +153,11 @@ class AutomergeSyncServer {
           delete doc.comments[commentId]
           
           // Delete associated mentions
-          mentionsToDelete.forEach(mentionId => {
-            delete doc.mentions[mentionId]
-          })
+          if (doc.mentions) {
+            mentionsToDelete.forEach(mentionId => {
+              delete doc.mentions[mentionId]
+            })
+          }
         })
         
         this.broadcastDocumentUpdate()
