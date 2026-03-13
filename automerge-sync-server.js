@@ -143,12 +143,27 @@ class AutomergeSyncServer {
           return res.status(404).json({ error: 'Comment not found' })
         }
         
+        // Find mentions that reference this comment
+        const mentionsToDelete = Object.entries(doc.mentions || {})
+          .filter(([_, mention]) => mention.comment_id === commentId)
+          .map(([mentionId]) => mentionId)
+        
         await this.store.docHandle.change(doc => {
+          // Delete the comment
           delete doc.comments[commentId]
+          
+          // Delete associated mentions
+          mentionsToDelete.forEach(mentionId => {
+            delete doc.mentions[mentionId]
+          })
         })
         
         this.broadcastDocumentUpdate()
-        res.json({ success: true, commentId })
+        res.json({ 
+          success: true, 
+          commentId,
+          mentionsDeleted: mentionsToDelete.length 
+        })
       } catch (error) {
         res.status(500).json({ error: error.message })
       }
