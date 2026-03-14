@@ -210,6 +210,7 @@ export default function MissionControlSync() {
           comments={getTaskComments(selectedTask.id)}
           agents={agents}
           taskHistory={(doc.taskHistory || {})[selectedTask.id] || []}
+          taskActivity={(doc.activity || []).filter(a => (a.task_id || a.taskId) === selectedTask.id)}
           onClose={() => setSelectedTask(null)}
           onUpdate={updateTask}
           onComment={addComment}
@@ -320,7 +321,7 @@ function NewTaskModal({ onClose, onCreate }) {
   )
 }
 
-function TaskDetailModal({ task, comments, agents, onClose, onUpdate, onComment, taskHistory }) {
+function TaskDetailModal({ task, comments, agents, onClose, onUpdate, onComment, taskHistory, taskActivity }) {
   const [commentText, setCommentText] = useState('')
   const [showMentions, setShowMentions] = useState(false)
   const [mentionFilter, setMentionFilter] = useState('')
@@ -477,77 +478,130 @@ function TaskDetailModal({ task, comments, agents, onClose, onUpdate, onComment,
             </div>
           )}
           
-          {/* Commits linked via Agent Trace */}
+          {/* Unified task history timeline */}
           {(() => {
-            const commits = (taskHistory || []).filter(h => h.type === 'commit')
-            if (commits.length === 0) return null
+            // Merge commits, comments, and activity into one chronological list
+            const history = []
+            const commitHashes = new Set()
+            
+            // Commits from taskHistory
+            for (const entry of (taskHistory || [])) {
+              if (entry.type === 'commit') {
+                commitHashes.add(entry.commit?.hash)
+                history.push({ ...entry, _kind: 'commit', _sortTime: new Date(entry.timestamp) })
+              }
+            }
+            
+            // Comments
+            for (const c of comments) {
+              history.push({ ...c, _kind: 'comment', _sortTime: new Date(c.timestamp) })
+            }
+            
+            // Activity events (status changes, branches, merges — skip commit_linked duplicates)
+            for (const a of (taskActivity || [])) {
+              if (a.type === 'commit_linked' && a.commitHash && commitHashes.has(a.commitHash)) continue
+              if (a.type === 'comment_added') continue // already have comments
+              history.push({ ...a, _kind: kindFromType(a.type), _sortTime: new Date(a.timestamp) })
+            }
+            
+            history.sort((a, b) => a._sortTime - b._sortTime)
+            
             return (
-              <div style={styles.commitsSection}>
-                <h3 style={styles.sectionTitle}>🔗 Commits ({commits.length})</h3>
-                <div style={styles.commitsList}>
-                  {commits.map((c, i) => (
-                    <div key={i} style={styles.commitEntry}>
-                      <div style={styles.commitHeader}>
-                        <code style={styles.commitHash}>{c.commit.shortHash}</code>
-                        <span style={styles.commitAgent}>@{c.agent}</span>
-                        <span style={styles.commentTime}>{formatTime(c.timestamp)}</span>
-                      </div>
-                      <div style={styles.commitMessage}>{c.commit.message.split('\n')[0]}</div>
-                      {c.commit.diff?.shortstat && (
-                        <div style={styles.commitDiff}>{c.commit.diff.shortstat}</div>
-                      )}
-                    </div>
-                  ))}
+              <div style={styles.commentsSection}>
+                <div style={styles.commentsSectionHeader}>
+                  <h3 style={styles.sectionTitle}>History ({history.length})</h3>
+                  {history.length > 5 && (
+                    <button style={styles.jumpBtn} onClick={scrollToRecent}>↓ Recent</button>
+                  )}
                 </div>
+                
+                <div ref={commentsContainerRef} style={styles.commentsContainer}>
+                  {history.map((entry, i) => {
+                    const bc = borderColors[entry._kind] || '#333'
+                    const icon = kindIcons[entry._kind] || '●'
+                    
+                    // Comment entry
+                    if (entry._kind === 'comment') {
+                      return (
+                        <div key={entry.id || `comment-${i}`} style={{ ...styles.comment, borderLeft: `4px solid ${borderColors.comment}` }}>
+                          <div style={styles.commentHeader}>
+                            <span>{icon} <span style={styles.commentAuthor}>@{entry.agent}</span></span>
+                            <span style={styles.commentTime}>{formatTime(entry.timestamp)}</span>
+                          </div>
+                          <div style={styles.commentBody}>
+                            <Markdown components={{
+                              p: ({children}) => <span>{children}</span>,
+                              a: ({href, children}) => <a href={href} target="_blank" rel="noopener noreferrer" style={{color: '#10b981'}}>{children}</a>,
+                              code: ({children}) => <code style={{background: '#1a1a1a', padding: '2px 4px', borderRadius: 3, fontSize: '0.9em'}}>{children}</code>,
+                              strong: ({children}) => <strong style={{color: '#fff'}}>{children}</strong>,
+                            }}>{entry.content || entry.text}</Markdown>
+                          </div>
+                        </div>
+                      )
+                    }
+                    
+                    // Commit entry
+                    if (entry._kind === 'commit' && entry.commit) {
+                      return (
+                        <div key={entry.commit?.hash || `commit-${i}`} style={{ ...styles.commitEntry, borderLeft: `4px solid ${borderColors.commit}` }}>
+                          <div style={styles.commitHeader}>
+                            <span>{icon}</span>
+                            <code style={styles.commitHash}>{entry.commit.shortHash}</code>
+                            <span style={styles.commitAgent}>@{entry.agent}</span>
+                            <span style={{ ...styles.commentTime, marginLeft: 'auto' }}>{formatTime(entry.timestamp)}</span>
+                          </div>
+                          <div style={styles.commitMessage}>{entry.commit.message.split('\n')[0]}</div>
+                          {entry.commit.diff?.shortstat && (
+                            <div style={styles.commitDiff}>{entry.commit.diff.shortstat}</div>
+                          )}
+                          {entry.commit.diff?.files && entry.commit.diff.files.length > 0 && (
+                            <div style={{ marginTop: 6 }}>
+                              {entry.commit.diff.files.slice(0, 5).map((f, fi) => (
+                                <div key={fi} style={{ fontSize: 12, color: '#666', fontFamily: 'monospace', padding: '1px 0' }}>
+                                  {f.file} <span style={{ color: '#10b981' }}>+{f.insertions || 0}</span> <span style={{ color: '#ef4444' }}>-{f.deletions || 0}</span>
+                                </div>
+                              ))}
+                              {entry.commit.diff.files.length > 5 && (
+                                <div style={{ fontSize: 11, color: '#444', fontStyle: 'italic' }}>...and {entry.commit.diff.files.length - 5} more files</div>
+                              )}
+                            </div>
+                          )}
+                        </div>
+                      )
+                    }
+                    
+                    // Status/branch/other activity entry
+                    return (
+                      <div key={entry.id || `activity-${i}`} style={{ ...styles.taskHistoryEvent, borderLeft: `4px solid ${bc}` }}>
+                        <span>{icon}</span>
+                        <span style={styles.commitAgent}>@{entry.agent || 'system'}</span>
+                        {entry.details && <span style={{ color: '#888', fontSize: 13 }}>{entry.details}</span>}
+                        <span style={{ ...styles.commentTime, marginLeft: 'auto' }}>{formatTime(entry.timestamp)}</span>
+                      </div>
+                    )
+                  })}
+                  <div ref={commentsEndRef} />
+                </div>
+                
+                <form onSubmit={handleComment} style={styles.commentForm}>
+                  <div style={styles.commentInputWrapper}>
+                    <input ref={inputRef} type="text" placeholder="Add a comment... (@ to mention)"
+                      value={commentText} onChange={handleCommentChange} style={styles.commentInput} />
+                    {showMentions && filteredAgents.length > 0 && (
+                      <div style={styles.mentionDropdown}>
+                        {filteredAgents.map(a => (
+                          <div key={a.name} style={styles.mentionItem} onClick={() => insertMention(a.name)}>
+                            @{a.name} <span style={styles.mentionRole}>{a.role}</span>
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                  <button type="submit" style={styles.btnPrimary} disabled={!commentText.trim()}>Send</button>
+                </form>
               </div>
             )
           })()}
-
-          <div style={styles.commentsSection}>
-            <div style={styles.commentsSectionHeader}>
-              <h3 style={styles.sectionTitle}>Comments {comments.length > 0 && `(${comments.length})`}</h3>
-              {comments.length > 3 && (
-                <button style={styles.jumpBtn} onClick={scrollToRecent}>↓ Recent</button>
-              )}
-            </div>
-            
-            <div ref={commentsContainerRef} style={styles.commentsContainer}>
-              {comments.map(c => (
-                <div key={c.id} style={styles.comment}>
-                  <div style={styles.commentHeader}>
-                    <span style={styles.commentAuthor}>@{c.agent}</span>
-                    <span style={styles.commentTime}>{formatTime(c.timestamp)}</span>
-                  </div>
-                  <div style={styles.commentBody}>
-                    <Markdown components={{
-                      p: ({children}) => <span>{children}</span>,
-                      a: ({href, children}) => <a href={href} target="_blank" rel="noopener noreferrer" style={{color: '#10b981'}}>{children}</a>,
-                      code: ({children}) => <code style={{background: '#1a1a1a', padding: '2px 4px', borderRadius: 3, fontSize: '0.9em'}}>{children}</code>,
-                      strong: ({children}) => <strong style={{color: '#fff'}}>{children}</strong>,
-                    }}>{c.content || c.text}</Markdown>
-                  </div>
-                </div>
-              ))}
-              <div ref={commentsEndRef} />
-            </div>
-            
-            <form onSubmit={handleComment} style={styles.commentForm}>
-              <div style={styles.commentInputWrapper}>
-                <input ref={inputRef} type="text" placeholder="Add a comment... (@ to mention)"
-                  value={commentText} onChange={handleCommentChange} style={styles.commentInput} />
-                {showMentions && filteredAgents.length > 0 && (
-                  <div style={styles.mentionDropdown}>
-                    {filteredAgents.map(a => (
-                      <div key={a.name} style={styles.mentionItem} onClick={() => insertMention(a.name)}>
-                        @{a.name} <span style={styles.mentionRole}>{a.role}</span>
-                      </div>
-                    ))}
-                  </div>
-                )}
-              </div>
-              <button type="submit" style={styles.btnPrimary} disabled={!commentText.trim()}>Send</button>
-            </form>
-          </div>
         </div>
       </div>
     </div>
@@ -825,6 +879,7 @@ const styles = {
   timelineFilterBtn: { background: '#0a0a0a', border: '1px solid #222', color: '#888', borderRadius: 6, padding: '5px 10px', fontSize: 12, cursor: 'pointer', transition: 'all 0.15s' },
   timelineItem: { background: '#0a0a0a', borderLeft: '4px solid #333', borderRadius: '0 8px 8px 0', padding: '10px 14px', cursor: 'pointer', transition: 'background 0.15s' },
   timelineItemTop: { display: 'flex', alignItems: 'center', gap: 8 },
+  taskHistoryEvent: { display: 'flex', alignItems: 'center', gap: 8, padding: '8px 14px', borderRadius: '0 6px 6px 0', background: '#0a0a0a', fontSize: 13, marginBottom: 8 },
 
   // Commits section
   commitsSection: { marginTop: 24, marginBottom: 8 },
