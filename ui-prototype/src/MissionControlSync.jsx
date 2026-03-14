@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useRef, useCallback } from 'react'
+import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 
@@ -210,6 +210,8 @@ export default function MissionControlSync() {
           comments={getTaskComments(selectedTask.id)}
           agents={agents}
           taskHistory={(doc.taskHistory || {})[selectedTask.id] || []}
+          // TODO: normalize activity events to use consistent `taskId` field at creation time
+          taskActivity={(doc.activity || []).filter(a => (a.task_id || a.taskId) === selectedTask.id)}
           onClose={() => setSelectedTask(null)}
           onUpdate={updateTask}
           onComment={addComment}
@@ -320,7 +322,7 @@ function NewTaskModal({ onClose, onCreate }) {
   )
 }
 
-function TaskDetailModal({ task, comments, agents, onClose, onUpdate, onComment, taskHistory }) {
+function TaskDetailModal({ task, comments, agents, onClose, onUpdate, onComment, taskHistory, taskActivity }) {
   const [commentText, setCommentText] = useState('')
   const [showMentions, setShowMentions] = useState(false)
   const [mentionFilter, setMentionFilter] = useState('')
@@ -477,79 +479,150 @@ function TaskDetailModal({ task, comments, agents, onClose, onUpdate, onComment,
             </div>
           )}
           
-          {/* Commits linked via Agent Trace */}
-          {(() => {
-            const commits = (taskHistory || []).filter(h => h.type === 'commit')
-            if (commits.length === 0) return null
+          <TaskHistory
+            taskHistory={taskHistory}
+            comments={comments}
+            taskActivity={taskActivity}
+            formatTime={formatTime}
+            scrollToRecent={scrollToRecent}
+            commentsContainerRef={commentsContainerRef}
+            commentsEndRef={commentsEndRef}
+            commentText={commentText}
+            handleCommentChange={handleCommentChange}
+            handleComment={handleComment}
+            inputRef={inputRef}
+            showMentions={showMentions}
+            filteredAgents={filteredAgents}
+            insertMention={insertMention}
+          />
+        </div>
+      </div>
+    </div>
+  )
+}
+
+function TaskHistory({ taskHistory, comments, taskActivity, formatTime, scrollToRecent, commentsContainerRef, commentsEndRef, commentText, handleCommentChange, handleComment, inputRef, showMentions, filteredAgents, insertMention }) {
+  const history = useMemo(() => {
+    const items = []
+    const commitHashes = new Set()
+
+    // Commits from taskHistory
+    for (const entry of (taskHistory || [])) {
+      if (entry.type === 'commit') {
+        commitHashes.add(entry.commit?.hash)
+        items.push({ ...entry, _kind: 'commit', _sortTime: new Date(entry.timestamp || 0) })
+      }
+    }
+
+    // Comments
+    for (const c of comments) {
+      items.push({ ...c, _kind: 'comment', _sortTime: new Date(c.timestamp || 0) })
+    }
+
+    // Activity events (status changes, branches, merges — skip commit_linked duplicates)
+    for (const a of (taskActivity || [])) {
+      if (a.type === 'commit_linked' && a.commitHash && commitHashes.has(a.commitHash)) continue
+      if (a.type === 'comment_added') continue // already have comments
+      items.push({ ...a, _kind: kindFromType(a.type), _sortTime: new Date(a.timestamp || 0) })
+    }
+
+    items.sort((a, b) => a._sortTime - b._sortTime)
+    return items
+  }, [taskHistory, comments, taskActivity])
+
+  return (
+    <div style={styles.commentsSection}>
+      <div style={styles.commentsSectionHeader}>
+        <h3 style={styles.sectionTitle}>History ({history.length})</h3>
+        {history.length > 5 && (
+          <button style={styles.jumpBtn} onClick={scrollToRecent}>↓ Recent</button>
+        )}
+      </div>
+
+      <div ref={commentsContainerRef} style={styles.commentsContainer}>
+        {history.map((entry) => {
+          const bc = borderColors[entry._kind] || '#333'
+          const icon = kindIcons[entry._kind] || '●'
+
+          // Comment entry
+          if (entry._kind === 'comment') {
             return (
-              <div style={styles.commitsSection}>
-                <h3 style={styles.sectionTitle}>🔗 Commits ({commits.length})</h3>
-                <div style={styles.commitsList}>
-                  {commits.map((c, i) => (
-                    <div key={i} style={styles.commitEntry}>
-                      <div style={styles.commitHeader}>
-                        <code style={styles.commitHash}>{c.commit.shortHash}</code>
-                        <span style={styles.commitAgent}>@{c.agent}</span>
-                        <span style={styles.commentTime}>{formatTime(c.timestamp)}</span>
-                      </div>
-                      <div style={styles.commitMessage}>{c.commit.message.split('\n')[0]}</div>
-                      {c.commit.diff?.shortstat && (
-                        <div style={styles.commitDiff}>{c.commit.diff.shortstat}</div>
-                      )}
-                    </div>
-                  ))}
+              <div key={entry.id || `comment-${entry.timestamp}-${entry.agent}`} style={{ ...styles.comment, borderLeft: `4px solid ${borderColors.comment}` }}>
+                <div style={styles.commentHeader}>
+                  <span>{icon} <span style={styles.commentAuthor}>@{entry.agent}</span></span>
+                  <span style={styles.commentTime}>{formatTime(entry.timestamp)}</span>
+                </div>
+                <div style={styles.commentBody}>
+                  <Markdown components={{
+                    p: ({children}) => <span>{children}</span>,
+                    a: ({href, children}) => <a href={href} target="_blank" rel="noopener noreferrer" style={{color: '#10b981'}}>{children}</a>,
+                    code: ({children}) => <code style={{background: '#1a1a1a', padding: '2px 4px', borderRadius: 3, fontSize: '0.9em'}}>{children}</code>,
+                    strong: ({children}) => <strong style={{color: '#fff'}}>{children}</strong>,
+                  }}>{entry.content || entry.text}</Markdown>
                 </div>
               </div>
             )
-          })()}
+          }
 
-          <div style={styles.commentsSection}>
-            <div style={styles.commentsSectionHeader}>
-              <h3 style={styles.sectionTitle}>Comments {comments.length > 0 && `(${comments.length})`}</h3>
-              {comments.length > 3 && (
-                <button style={styles.jumpBtn} onClick={scrollToRecent}>↓ Recent</button>
-              )}
-            </div>
-            
-            <div ref={commentsContainerRef} style={styles.commentsContainer}>
-              {comments.map(c => (
-                <div key={c.id} style={styles.comment}>
-                  <div style={styles.commentHeader}>
-                    <span style={styles.commentAuthor}>@{c.agent}</span>
-                    <span style={styles.commentTime}>{formatTime(c.timestamp)}</span>
-                  </div>
-                  <div style={styles.commentBody}>
-                    <Markdown components={{
-                      p: ({children}) => <span>{children}</span>,
-                      a: ({href, children}) => <a href={href} target="_blank" rel="noopener noreferrer" style={{color: '#10b981'}}>{children}</a>,
-                      code: ({children}) => <code style={{background: '#1a1a1a', padding: '2px 4px', borderRadius: 3, fontSize: '0.9em'}}>{children}</code>,
-                      strong: ({children}) => <strong style={{color: '#fff'}}>{children}</strong>,
-                    }}>{c.content || c.text}</Markdown>
-                  </div>
+          // Commit entry
+          if (entry._kind === 'commit' && entry.commit) {
+            return (
+              <div key={entry.commit?.hash || `commit-${entry.timestamp}-${entry.agent}`} style={{ ...styles.commitEntry, borderLeft: `4px solid ${borderColors.commit}` }}>
+                <div style={styles.commitHeader}>
+                  <span>{icon}</span>
+                  <code style={styles.commitHash}>{entry.commit.shortHash}</code>
+                  <span style={styles.commitAgent}>@{entry.agent}</span>
+                  <span style={styles.commentTimeRight}>{formatTime(entry.timestamp)}</span>
                 </div>
-              ))}
-              <div ref={commentsEndRef} />
-            </div>
-            
-            <form onSubmit={handleComment} style={styles.commentForm}>
-              <div style={styles.commentInputWrapper}>
-                <input ref={inputRef} type="text" placeholder="Add a comment... (@ to mention)"
-                  value={commentText} onChange={handleCommentChange} style={styles.commentInput} />
-                {showMentions && filteredAgents.length > 0 && (
-                  <div style={styles.mentionDropdown}>
-                    {filteredAgents.map(a => (
-                      <div key={a.name} style={styles.mentionItem} onClick={() => insertMention(a.name)}>
-                        @{a.name} <span style={styles.mentionRole}>{a.role}</span>
+                <div style={styles.commitMessage}>{entry.commit.message.split('\n')[0]}</div>
+                {entry.commit.diff?.shortstat && (
+                  <div style={styles.commitDiff}>{entry.commit.diff.shortstat}</div>
+                )}
+                {entry.commit.diff?.files && entry.commit.diff.files.length > 0 && (
+                  <div style={styles.commitFilesList}>
+                    {entry.commit.diff.files.slice(0, 5).map((f, fi) => (
+                      <div key={`${f.file}-${fi}`} style={styles.commitFileEntry}>
+                        {f.file} <span style={styles.commitFileAdd}>+{f.insertions || 0}</span> <span style={styles.commitFileDel}>-{f.deletions || 0}</span>
                       </div>
                     ))}
+                    {entry.commit.diff.files.length > 5 && (
+                      <div style={styles.commitFilesOverflow}>...and {entry.commit.diff.files.length - 5} more files</div>
+                    )}
                   </div>
                 )}
               </div>
-              <button type="submit" style={styles.btnPrimary} disabled={!commentText.trim()}>Send</button>
-            </form>
-          </div>
-        </div>
+            )
+          }
+
+          // Status/branch/other activity entry
+          return (
+            <div key={entry.id || `activity-${entry.type}-${entry.timestamp}`} style={{ ...styles.taskHistoryEvent, borderLeft: `4px solid ${bc}` }}>
+              <span>{icon}</span>
+              <span style={styles.commitAgent}>@{entry.agent || 'system'}</span>
+              {entry.details && <span style={styles.activityEntryDetails}>{entry.details}</span>}
+              <span style={styles.commentTimeRight}>{formatTime(entry.timestamp)}</span>
+            </div>
+          )
+        })}
+        <div ref={commentsEndRef} />
       </div>
+
+      <form onSubmit={handleComment} style={styles.commentForm}>
+        <div style={styles.commentInputWrapper}>
+          <input ref={inputRef} type="text" placeholder="Add a comment... (@ to mention)"
+            value={commentText} onChange={handleCommentChange} style={styles.commentInput} />
+          {showMentions && filteredAgents.length > 0 && (
+            <div style={styles.mentionDropdown}>
+              {filteredAgents.map(a => (
+                <div key={a.name} style={styles.mentionItem} onClick={() => insertMention(a.name)}>
+                  @{a.name} <span style={styles.mentionRole}>{a.role}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+        <button type="submit" style={styles.btnPrimary} disabled={!commentText.trim()}>Send</button>
+      </form>
     </div>
   )
 }
@@ -825,6 +898,14 @@ const styles = {
   timelineFilterBtn: { background: '#0a0a0a', border: '1px solid #222', color: '#888', borderRadius: 6, padding: '5px 10px', fontSize: 12, cursor: 'pointer', transition: 'all 0.15s' },
   timelineItem: { background: '#0a0a0a', borderLeft: '4px solid #333', borderRadius: '0 8px 8px 0', padding: '10px 14px', cursor: 'pointer', transition: 'background 0.15s' },
   timelineItemTop: { display: 'flex', alignItems: 'center', gap: 8 },
+  taskHistoryEvent: { display: 'flex', alignItems: 'center', gap: 8, padding: '8px 14px', borderRadius: '0 6px 6px 0', background: '#0a0a0a', fontSize: 13, marginBottom: 8 },
+  commentTimeRight: { fontSize: 12, color: '#444', marginLeft: 'auto' },
+  activityEntryDetails: { color: '#888', fontSize: 13 },
+  commitFilesList: { marginTop: 6 },
+  commitFileEntry: { fontSize: 12, color: '#666', fontFamily: 'monospace', padding: '1px 0' },
+  commitFileAdd: { color: '#10b981' },
+  commitFileDel: { color: '#ef4444' },
+  commitFilesOverflow: { fontSize: 11, color: '#444', fontStyle: 'italic' },
 
   // Commits section
   commitsSection: { marginTop: 24, marginBottom: 8 },
