@@ -555,21 +555,59 @@ function TaskDetailModal({ task, comments, agents, onClose, onUpdate, onComment,
 }
 
 function ActivityView({ doc, onSelectTask }) {
-  const activity = [...(doc.activity || [])]
-    .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
-    .slice(0, 50)
+  const [filters, setFilters] = React.useState({
+    commit: true, comment: true, status: true, task: true, branch: true, agent: true
+  })
   
-  // Also gather all commits across tasks
-  const allCommits = []
-  for (const [taskId, history] of Object.entries(doc.taskHistory || {})) {
-    for (const entry of history) {
-      if (entry.type === 'commit') {
-        const task = (doc.tasks || {})[taskId]
-        allCommits.push({ ...entry, taskId, taskTitle: task?.title || taskId })
+  const toggleFilter = (key) => setFilters(f => ({ ...f, [key]: !f[key] }))
+  
+  // Build a unified timeline from all sources
+  const timeline = React.useMemo(() => {
+    const events = []
+    const commitHashes = new Set() // track commit hashes to deduplicate commit_linked activity
+    
+    // 1. Gather commits from taskHistory
+    for (const [taskId, history] of Object.entries(doc.taskHistory || {})) {
+      for (const entry of history) {
+        if (entry.type === 'commit') {
+          const task = (doc.tasks || {})[taskId]
+          commitHashes.add(entry.commit?.shortHash)
+          events.push({
+            ...entry,
+            _kind: 'commit',
+            taskId,
+            taskTitle: task?.title || taskId,
+          })
+        }
       }
     }
-  }
-  allCommits.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
+    
+    // 2. Gather activity events (skip commit_linked if we already have the commit)
+    for (const entry of (doc.activity || [])) {
+      // Deduplicate: if this is a commit_linked event and we already have the commit from taskHistory, skip
+      if (entry.type === 'commit_linked' && entry.commitHash) {
+        const shortHash = entry.commitHash.substring(0, 8)
+        if (commitHashes.has(shortHash)) continue
+      }
+      
+      const taskId = entry.task_id || entry.taskId
+      const task = taskId ? (doc.tasks || {})[taskId] : null
+      
+      events.push({
+        ...entry,
+        _kind: kindFromType(entry.type),
+        taskId,
+        taskTitle: task?.title || taskId,
+      })
+    }
+    
+    // Sort newest first
+    events.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
+    return events
+  }, [doc.taskHistory, doc.activity, doc.tasks])
+  
+  // Apply filters
+  const filtered = timeline.filter(e => filters[e._kind] !== false)
   
   const formatTime = (ts) => {
     const d = new Date(ts), now = new Date(), diff = now - d
@@ -579,69 +617,114 @@ function ActivityView({ doc, onSelectTask }) {
     return d.toLocaleDateString()
   }
   
-  const icons = {
-    'comment_added': '💬',
-    'task_created': '📋',
-    'task_updated': '✏️',
-    'task_branched': '🌿',
-    'task_merged': '🔀',
-    'agent_registered': '🤖',
-    'status_changed': '🔄',
-    'commit_linked': '🔗',
-  }
+  const filterButtons = [
+    { key: 'commit', icon: '🔗', label: 'Commits' },
+    { key: 'comment', icon: '💬', label: 'Comments' },
+    { key: 'status', icon: '🔄', label: 'Status' },
+    { key: 'task', icon: '📋', label: 'Tasks' },
+    { key: 'branch', icon: '🌿', label: 'Branches' },
+    { key: 'agent', icon: '🤖', label: 'Agents' },
+  ]
   
   return (
     <div style={styles.activityContainer}>
-      {/* Commits section */}
-      {allCommits.length > 0 && (
-        <div style={styles.activityPanel}>
-          <h2 style={styles.activityPanelTitle}>🔗 Recent Commits</h2>
-          <div style={styles.activityList}>
-            {allCommits.slice(0, 20).map((c, i) => (
-              <div key={i} style={styles.activityCommit}
-                onClick={() => {
-                  const task = (doc.tasks || {})[c.taskId]
-                  if (task) onSelectTask(task)
-                }}>
-                <div style={styles.activityCommitTop}>
-                  <code style={styles.commitHash}>{c.commit.shortHash}</code>
-                  <span style={styles.commitAgent}>@{c.agent}</span>
-                  <span style={styles.activityTime}>{formatTime(c.timestamp)}</span>
-                </div>
-                <div style={styles.commitMessage}>{c.commit.message.split('\n')[0]}</div>
-                <div style={styles.activityTaskLink}>→ {c.taskTitle}</div>
-                {c.commit.diff?.shortstat && (
-                  <div style={styles.commitDiff}>{c.commit.diff.shortstat}</div>
-                )}
-              </div>
-            ))}
-          </div>
-        </div>
-      )}
+      {/* Filter bar */}
+      <div style={styles.timelineFilterBar}>
+        {filterButtons.map(fb => (
+          <button key={fb.key}
+            style={{
+              ...styles.timelineFilterBtn,
+              ...(filters[fb.key] ? { background: '#1a1a1a', color: '#e5e5e5', borderColor: '#333' } : { opacity: 0.4 })
+            }}
+            onClick={() => toggleFilter(fb.key)}>
+            {fb.icon} {fb.label}
+          </button>
+        ))}
+      </div>
       
-      {/* Activity feed */}
+      {/* Unified timeline */}
       <div style={styles.activityPanel}>
-        <h2 style={styles.activityPanelTitle}>📋 Activity Feed</h2>
+        <h2 style={styles.activityPanelTitle}>Timeline</h2>
         <div style={styles.activityList}>
-          {activity.map((entry, i) => {
-            const taskId = entry.task_id || entry.taskId
-            const task = taskId ? (doc.tasks || {})[taskId] : null
-            
-            return (
-              <div key={entry.id || i} style={styles.activityItem}
-                onClick={() => task && onSelectTask(task)}>
-                <div style={styles.activityItemTop}>
-                  <span>{icons[entry.type] || '●'}</span>
-                  <span style={styles.commitAgent}>@{entry.agent || 'system'}</span>
-                  <span style={styles.activityTime}>{formatTime(entry.timestamp)}</span>
-                </div>
-                {task && <div style={styles.activityTaskLink}>{task.title}</div>}
-                {entry.details && <div style={styles.activityDetails}>{entry.details}</div>}
-              </div>
-            )
-          })}
+          {filtered.slice(0, 80).map((entry, i) => (
+            <TimelineEntry key={entry.id || `${entry.timestamp}-${i}`} entry={entry}
+              formatTime={formatTime} onSelectTask={onSelectTask} doc={doc} />
+          ))}
+          {filtered.length === 0 && (
+            <div style={styles.emptyText}>No activity matches your filters</div>
+          )}
         </div>
       </div>
+    </div>
+  )
+}
+
+function kindFromType(type) {
+  switch (type) {
+    case 'commit_linked': return 'commit'
+    case 'comment_added': return 'comment'
+    case 'status_changed': return 'status'
+    case 'task_created': case 'task_updated': return 'task'
+    case 'task_branched': case 'task_merged': return 'branch'
+    case 'agent_registered': return 'agent'
+    default: return 'task'
+  }
+}
+
+const borderColors = {
+  commit: '#3b82f6',
+  comment: '#10b981',
+  task: '#8b5cf6',
+  status: '#f59e0b',
+  branch: '#06b6d4',
+  agent: '#6b7280',
+}
+
+const kindIcons = {
+  commit: '🔗',
+  comment: '💬',
+  task: '📋',
+  status: '🔄',
+  branch: '🌿',
+  agent: '🤖',
+}
+
+function TimelineEntry({ entry, formatTime, onSelectTask, doc }) {
+  const borderColor = borderColors[entry._kind] || '#333'
+  const icon = kindIcons[entry._kind] || '●'
+  const task = entry.taskId ? (doc.tasks || {})[entry.taskId] : null
+  
+  const handleClick = () => task && onSelectTask(task)
+  
+  // Commit entries get richer rendering
+  if (entry._kind === 'commit' && entry.commit) {
+    return (
+      <div style={{ ...styles.timelineItem, borderLeftColor: borderColor }} onClick={handleClick}>
+        <div style={styles.timelineItemTop}>
+          <span>{icon}</span>
+          <code style={styles.commitHash}>{entry.commit.shortHash}</code>
+          <span style={styles.commitAgent}>@{entry.agent}</span>
+          <span style={styles.activityTime}>{formatTime(entry.timestamp)}</span>
+        </div>
+        <div style={styles.commitMessage}>{entry.commit.message.split('\n')[0]}</div>
+        {entry.taskTitle && <div style={styles.activityTaskLink}>→ {entry.taskTitle}</div>}
+        {entry.commit.diff?.shortstat && (
+          <div style={styles.commitDiff}>{entry.commit.diff.shortstat}</div>
+        )}
+      </div>
+    )
+  }
+  
+  // All other event types
+  return (
+    <div style={{ ...styles.timelineItem, borderLeftColor: borderColor }} onClick={handleClick}>
+      <div style={styles.timelineItemTop}>
+        <span>{icon}</span>
+        <span style={styles.commitAgent}>@{entry.agent || 'system'}</span>
+        <span style={styles.activityTime}>{formatTime(entry.timestamp)}</span>
+      </div>
+      {entry.taskTitle && <div style={styles.activityTaskLink}>{entry.taskTitle}</div>}
+      {entry.details && <div style={styles.activityDetails}>{entry.details}</div>}
     </div>
   )
 }
@@ -726,17 +809,19 @@ const styles = {
   viewToggleActive: { background: '#1a2332', borderColor: '#58a6ff', color: '#58a6ff' },
   
   // Activity view
-  activityContainer: { padding: '20px', maxWidth: 800, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 24 },
+  activityContainer: { padding: '20px', maxWidth: 800, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 16 },
   activityPanel: { background: '#111', border: '1px solid #1a1a1a', borderRadius: 12, padding: 20, overflow: 'hidden' },
   activityPanelTitle: { fontSize: 16, fontWeight: 600, color: '#fff', margin: '0 0 16px 0' },
-  activityList: { display: 'flex', flexDirection: 'column', gap: 8 },
-  activityCommit: { background: '#0d1117', border: '1px solid #1a2332', borderRadius: 8, padding: '12px 16px', cursor: 'pointer', transition: 'border-color 0.15s' },
-  activityCommitTop: { display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 },
+  activityList: { display: 'flex', flexDirection: 'column', gap: 6 },
   activityTime: { fontSize: 12, color: '#444', marginLeft: 'auto' },
   activityTaskLink: { fontSize: 12, color: '#58a6ff', marginTop: 4 },
-  activityItem: { background: '#0a0a0a', border: '1px solid #1a1a1a', borderRadius: 8, padding: '10px 14px', cursor: 'pointer' },
-  activityItemTop: { display: 'flex', alignItems: 'center', gap: 8 },
   activityDetails: { fontSize: 13, color: '#888', marginTop: 4 },
+  
+  // Unified timeline
+  timelineFilterBar: { display: 'flex', flexWrap: 'wrap', gap: 6 },
+  timelineFilterBtn: { background: '#0a0a0a', border: '1px solid #222', color: '#888', borderRadius: 6, padding: '5px 10px', fontSize: 12, cursor: 'pointer', transition: 'all 0.15s' },
+  timelineItem: { background: '#0a0a0a', borderLeft: '4px solid #333', borderRadius: '0 8px 8px 0', padding: '10px 14px', cursor: 'pointer', transition: 'background 0.15s' },
+  timelineItemTop: { display: 'flex', alignItems: 'center', gap: 8 },
 
   // Commits section
   commitsSection: { marginTop: 24, marginBottom: 8 },
