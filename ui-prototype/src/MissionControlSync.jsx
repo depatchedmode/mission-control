@@ -571,12 +571,13 @@ function ActivityView({ doc, onSelectTask }) {
       for (const entry of history) {
         if (entry.type === 'commit') {
           const task = (doc.tasks || {})[taskId]
-          commitHashes.add(entry.commit?.shortHash)
+          commitHashes.add(entry.commit?.hash)
           events.push({
             ...entry,
             _kind: 'commit',
             taskId,
             taskTitle: task?.title || taskId,
+            _task: task,
           })
         }
       }
@@ -586,8 +587,7 @@ function ActivityView({ doc, onSelectTask }) {
     for (const entry of (doc.activity || [])) {
       // Deduplicate: if this is a commit_linked event and we already have the commit from taskHistory, skip
       if (entry.type === 'commit_linked' && entry.commitHash) {
-        const shortHash = entry.commitHash.substring(0, 8)
-        if (commitHashes.has(shortHash)) continue
+        if (commitHashes.has(entry.commitHash)) continue
       }
       
       const taskId = entry.task_id || entry.taskId
@@ -598,13 +598,14 @@ function ActivityView({ doc, onSelectTask }) {
         _kind: kindFromType(entry.type),
         taskId,
         taskTitle: task?.title || taskId,
+        _task: task,
       })
     }
     
     // Sort newest first
     events.sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
     return events
-  }, [doc.taskHistory, doc.activity, doc.tasks])
+  }, [doc])
   
   // Apply filters
   const filtered = timeline.filter(e => filters[e._kind] !== false)
@@ -646,9 +647,10 @@ function ActivityView({ doc, onSelectTask }) {
       <div style={styles.activityPanel}>
         <h2 style={styles.activityPanelTitle}>Timeline</h2>
         <div style={styles.activityList}>
+          {/* TODO: virtualize with react-window if event count grows beyond hundreds */}
           {filtered.slice(0, 80).map((entry, i) => (
             <TimelineEntry key={entry.id || `${entry.timestamp}-${i}`} entry={entry}
-              formatTime={formatTime} onSelectTask={onSelectTask} doc={doc} />
+              formatTime={formatTime} onSelectTask={onSelectTask} />
           ))}
           {filtered.length === 0 && (
             <div style={styles.emptyText}>No activity matches your filters</div>
@@ -667,7 +669,7 @@ function kindFromType(type) {
     case 'task_created': case 'task_updated': return 'task'
     case 'task_branched': case 'task_merged': return 'branch'
     case 'agent_registered': return 'agent'
-    default: return 'task'
+    default: return 'other'
   }
 }
 
@@ -678,6 +680,7 @@ const borderColors = {
   status: '#f59e0b',
   branch: '#06b6d4',
   agent: '#6b7280',
+  other: '#a855f7',
 }
 
 const kindIcons = {
@@ -687,14 +690,14 @@ const kindIcons = {
   status: '🔄',
   branch: '🌿',
   agent: '🤖',
+  other: '●',
 }
 
-function TimelineEntry({ entry, formatTime, onSelectTask, doc }) {
+function TimelineEntry({ entry, formatTime, onSelectTask }) {
   const borderColor = borderColors[entry._kind] || '#333'
   const icon = kindIcons[entry._kind] || '●'
-  const task = entry.taskId ? (doc.tasks || {})[entry.taskId] : null
   
-  const handleClick = () => task && onSelectTask(task)
+  const handleClick = () => entry._task && onSelectTask(entry._task)
   
   // Commit entries get richer rendering
   if (entry._kind === 'commit' && entry.commit) {
