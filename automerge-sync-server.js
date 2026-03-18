@@ -12,6 +12,7 @@ import { AutomergeStore } from './lib/automerge-store.js'
 import express from 'express'
 import cors from 'cors'
 import crypto from 'crypto'
+import { fileURLToPath } from 'url'
 
 const DEFAULT_HTTP_PORT = 8004
 const DEFAULT_WS_PORT = 8005
@@ -108,14 +109,15 @@ class AutomergeSyncServer {
     return this.allowedOrigins.has(origin)
   }
 
-  tokenFromRequest(req) {
+  tokenFromRequest(req, options = {}) {
+    const { allowLegacyWsQueryToken = false } = options
     const bearerToken = getBearerToken(req.headers?.authorization || '')
     if (bearerToken) return bearerToken
 
     const headerToken = req.headers?.['x-mc-token']
     if (headerToken) return String(headerToken)
 
-    if (this.allowLegacyWsQueryToken) {
+    if (allowLegacyWsQueryToken && this.allowLegacyWsQueryToken) {
       try {
         const url = new URL(req.url || '', `http://${this.host}:${this.httpPort}`)
         const queryToken = url.searchParams.get('token')
@@ -170,7 +172,7 @@ class AutomergeSyncServer {
   isAuthorizedWebSocketRequest(req) {
     if (!this.apiToken) return true
 
-    const token = this.tokenFromRequest(req)
+    const token = this.tokenFromRequest(req, { allowLegacyWsQueryToken: true })
     if (token === this.apiToken) return true
 
     const ticket = this.wsTicketFromRequest(req)
@@ -681,8 +683,9 @@ class AutomergeSyncServer {
   }
 }
 
-// Start the server
-const server = new AutomergeSyncServer()
-server.start().catch(console.error)
+if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
+  const server = new AutomergeSyncServer()
+  server.start().catch(console.error)
+}
 
 export default AutomergeSyncServer
