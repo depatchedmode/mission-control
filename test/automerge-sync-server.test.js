@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { afterEach, describe, it } from 'node:test'
+import { it } from 'node:test'
 import assert from 'node:assert/strict'
 import { once } from 'node:events'
 import { mkdtempSync, rmSync } from 'node:fs'
@@ -11,34 +11,44 @@ import { WebSocket } from 'ws'
 
 import AutomergeSyncServer from '../automerge-sync-server.js'
 
-const activeServers = []
-const tempDirs = []
-
 function createTempDir(prefix = 'mc-sync-test-') {
-  const dir = mkdtempSync(join(tmpdir(), prefix))
-  tempDirs.push(dir)
-  return dir
+  return mkdtempSync(join(tmpdir(), prefix))
 }
 
-function createServer(overrides = {}) {
+function createServer(storagePath, overrides = {}) {
   return new AutomergeSyncServer({
     env: {},
     apiToken: 'secret-token',
     allowedOrigins: ['http://allowed.example'],
     httpPort: 0,
     wsPort: 0,
-    storagePath: createTempDir(),
+    storagePath,
     usePersistedUrl: false,
     logger: { warn() {} },
     ...overrides,
   })
 }
 
-async function startServer(overrides = {}) {
-  const server = createServer(overrides)
-  activeServers.push(server)
-  await server.start()
-  return server
+async function withStartedServer(overrides, fn) {
+  const storagePath = createTempDir()
+  const server = createServer(storagePath, overrides)
+
+  try {
+    await server.start()
+    return await fn(server)
+  } finally {
+    await server.stop()
+  }
+}
+
+function withTempServer(overrides, fn) {
+  const storagePath = createTempDir()
+
+  try {
+    return fn(createServer(storagePath, overrides))
+  } finally {
+    rmSync(storagePath, { recursive: true, force: true })
+  }
 }
 
 function httpUrl(server, path) {
@@ -53,32 +63,32 @@ function connectWebSocket(url, options = {}) {
   return new Promise(resolve => {
     const ws = new WebSocket(url, options)
     let settled = false
+
     const timeout = setTimeout(() => {
-      if (!settled) {
-        try {
-          ws.terminate()
-        } catch {
-          // Ignore client shutdown errors during test timeouts.
-        }
-        resolve({ type: 'timeout' })
-      }
+      finish({ type: 'timeout' })
     }, 2000)
 
     function finish(result) {
       if (settled) return
       settled = true
       clearTimeout(timeout)
+      ws.removeAllListeners()
+
+      if (ws.readyState === WebSocket.OPEN) {
+        try {
+          ws.close()
+        } catch {
+          // Ignore shutdown errors during probe cleanup.
+        }
+      } else if (ws.readyState === WebSocket.CONNECTING) {
+        ws._req?.destroy()
+        ws._socket?.destroy()
+      }
+
       resolve(result)
     }
 
-    ws.once('open', () => {
-      try {
-        ws.close()
-      } catch {
-        // Ignore close failures while resolving open-path probes.
-      }
-      finish({ type: 'open' })
-    })
+    ws.once('open', () => finish({ type: 'open' }))
     ws.once('unexpected-response', (_req, res) => {
       const chunks = []
       res.on('data', chunk => chunks.push(Buffer.from(chunk)))
@@ -91,7 +101,7 @@ function connectWebSocket(url, options = {}) {
       })
       res.resume()
     })
-    ws.once('error', error => finish({ type: 'error', error }))
+    ws.once('error', error => finish({ type: 'error', message: error.message }))
   })
 }
 
@@ -137,44 +147,30 @@ async function expectWebSocketOpen(url, options = {}) {
   })
 }
 
-afterEach(async () => {
-  while (activeServers.length > 0) {
-    const server = activeServers.pop()
-    await server.stop()
-  }
+it('requires an API token unless insecure local mode is enabled', () => {
+  assert.throws(
+    () => withTempServer({ apiToken: '', allowInsecureLocal: false }, () => {}),
+    /MC_API_TOKEN is required/
+  )
 
-  while (tempDirs.length > 0) {
-    rmSync(tempDirs.pop(), { recursive: true, force: true })
-  }
+  assert.doesNotThrow(() => withTempServer({ apiToken: '', allowInsecureLocal: true }, () => {}))
 })
 
-describe('AutomergeSyncServer configuration', () => {
-  it('requires an API token unless insecure local mode is enabled', () => {
-    assert.throws(
-      () => createServer({ apiToken: '', allowInsecureLocal: false }),
-      /MC_API_TOKEN is required/
-    )
-
-    assert.doesNotThrow(() => createServer({ apiToken: '', allowInsecureLocal: true }))
-  })
-
-  it('binds to loopback by default', () => {
-    const server = createServer()
+it('binds to loopback by default', () => {
+  withTempServer({}, server => {
     assert.equal(server.host, '127.0.0.1')
   })
-
-  it('rejects wildcard origin configuration', () => {
-    assert.throws(
-      () => createServer({ allowedOrigins: '*' }),
-      /Wildcard "\*" is not supported/
-    )
-  })
 })
 
-describe('AutomergeSyncServer HTTP auth and CORS', () => {
-  it('allows authorized GET requests and allowlisted preflight requests', async () => {
-    const server = await startServer()
+it('rejects wildcard origin configuration', () => {
+  assert.throws(
+    () => withTempServer({ allowedOrigins: '*' }, () => {}),
+    /Wildcard "\*" is not supported/
+  )
+})
 
+it('allows authorized GET requests and allowlisted preflight requests', async () => {
+  await withStartedServer({}, async server => {
     const getResponse = await fetch(httpUrl(server, '/automerge/doc'), {
       headers: {
         Authorization: 'Bearer secret-token',
@@ -184,8 +180,7 @@ describe('AutomergeSyncServer HTTP auth and CORS', () => {
 
     assert.equal(getResponse.status, 200)
     assert.equal(getResponse.headers.get('access-control-allow-origin'), 'http://allowed.example')
-    const payload = await getResponse.json()
-    assert.equal(payload.success, true)
+    assert.equal((await getResponse.json()).success, true)
 
     const preflightResponse = await fetch(httpUrl(server, '/automerge/doc'), {
       method: 'OPTIONS',
@@ -197,13 +192,19 @@ describe('AutomergeSyncServer HTTP auth and CORS', () => {
     })
 
     assert.equal(preflightResponse.status, 204)
-    assert.equal(preflightResponse.headers.get('access-control-allow-origin'), 'http://allowed.example')
-    assert.match(preflightResponse.headers.get('access-control-allow-headers') || '', /Authorization/)
+    assert.equal(
+      preflightResponse.headers.get('access-control-allow-origin'),
+      'http://allowed.example'
+    )
+    assert.match(
+      preflightResponse.headers.get('access-control-allow-headers') || '',
+      /Authorization/
+    )
   })
+})
 
-  it('rejects disallowed origins for GET and preflight requests', async () => {
-    const server = await startServer()
-
+it('rejects disallowed origins for GET and preflight requests', async () => {
+  await withStartedServer({}, async server => {
     const getResponse = await fetch(httpUrl(server, '/automerge/doc'), {
       headers: {
         Authorization: 'Bearer secret-token',
@@ -226,10 +227,10 @@ describe('AutomergeSyncServer HTTP auth and CORS', () => {
     assert.match((await preflightResponse.json()).error, /Origin not allowed/)
     assert.equal(server.getSecurityCounters().httpOriginRejected, 2)
   })
+})
 
-  it('rejects unauthorized HTTP requests and accepts authorized ones', async () => {
-    const server = await startServer()
-
+it('rejects unauthorized HTTP requests and accepts authorized ones', async () => {
+  await withStartedServer({}, async server => {
     const unauthorizedResponse = await fetch(httpUrl(server, '/automerge/doc'))
     assert.equal(unauthorizedResponse.status, 401)
     assert.match((await unauthorizedResponse.json()).error, /Unauthorized/)
@@ -239,19 +240,17 @@ describe('AutomergeSyncServer HTTP auth and CORS', () => {
     })
     assert.equal(authorizedResponse.status, 200)
   })
+})
 
-  it('does not allow legacy query tokens on HTTP requests', async () => {
-    const server = await startServer({ allowLegacyWsQueryToken: true })
-
+it('does not allow legacy query tokens on HTTP requests', async () => {
+  await withStartedServer({ allowLegacyWsQueryToken: true }, async server => {
     const response = await fetch(httpUrl(server, '/automerge/doc?token=secret-token'))
     assert.equal(response.status, 401)
   })
 })
 
-describe('AutomergeSyncServer websocket auth and origin enforcement', () => {
-  it('rejects unauthorized websocket upgrades before the socket opens', async () => {
-    const server = await startServer()
-
+it('rejects unauthorized websocket upgrades before the socket opens', async () => {
+  await withStartedServer({}, async server => {
     const result = await connectWebSocket(wsUrl(server), {
       origin: 'http://allowed.example',
     })
@@ -260,10 +259,10 @@ describe('AutomergeSyncServer websocket auth and origin enforcement', () => {
     assert.equal(result.statusCode, 401)
     assert.match(result.body, /Unauthorized/)
   })
+})
 
-  it('rejects disallowed websocket origins before the socket opens', async () => {
-    const server = await startServer()
-
+it('rejects disallowed websocket origins before the socket opens', async () => {
+  await withStartedServer({}, async server => {
     const result = await connectWebSocket(wsUrl(server), {
       origin: 'http://denied.example',
       headers: { Authorization: 'Bearer secret-token' },
@@ -273,10 +272,10 @@ describe('AutomergeSyncServer websocket auth and origin enforcement', () => {
     assert.equal(result.statusCode, 403)
     assert.match(result.body, /Origin not allowed/)
   })
+})
 
-  it('consumes websocket tickets after a single successful use and rejects expired tickets', async () => {
-    const server = await startServer({ wsTicketTtlMs: 25 })
-
+it('consumes websocket tickets after a single successful use and rejects expired tickets', async () => {
+  await withStartedServer({ wsTicketTtlMs: 25 }, async server => {
     const ticketResponse = await fetch(httpUrl(server, '/automerge/ws-ticket'), {
       method: 'POST',
       headers: {
@@ -317,18 +316,18 @@ describe('AutomergeSyncServer websocket auth and origin enforcement', () => {
     assert.equal(expiredConnection.type, 'unexpected-response')
     assert.equal(expiredConnection.statusCode, 401)
   })
+})
 
-  it('allows legacy websocket query tokens only when the compatibility flag is enabled', async () => {
-    const disabledServer = await startServer({ allowLegacyWsQueryToken: false })
-
+it('allows legacy websocket query tokens only when the compatibility flag is enabled', async () => {
+  await withStartedServer({ allowLegacyWsQueryToken: false }, async disabledServer => {
     const disabledResult = await connectWebSocket(wsUrl(disabledServer, '/?token=secret-token'), {
       origin: 'http://allowed.example',
     })
     assert.equal(disabledResult.type, 'unexpected-response')
     assert.equal(disabledResult.statusCode, 401)
+  })
 
-    const enabledServer = await startServer({ allowLegacyWsQueryToken: true })
-
+  await withStartedServer({ allowLegacyWsQueryToken: true }, async enabledServer => {
     const enabledSocket = await expectWebSocketOpen(wsUrl(enabledServer, '/?token=secret-token'), {
       origin: 'http://allowed.example',
     })
