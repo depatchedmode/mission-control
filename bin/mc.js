@@ -31,6 +31,7 @@
 
 import { AutomergeStore } from '../lib/automerge-store.js';
 import * as agentTrace from '../lib/agent-trace.js';
+import { SyncRequestError, requestJson } from '../lib/sync-client.js';
 
 const API_BASE = process.env.MC_SYNC_SERVER || `http://localhost:${process.env.MC_HTTP_PORT || '8004'}`;
 const API_TOKEN = process.env.MC_API_TOKEN || null;
@@ -38,14 +39,6 @@ const rawArgs = process.argv.slice(2);
 const args = rawArgs;
 const command = args[0];
 const subcommand = args[1];
-
-function withAuthHeaders(headers = {}) {
-  if (!API_TOKEN) return { ...headers };
-  return {
-    ...headers,
-    Authorization: `Bearer ${API_TOKEN}`
-  };
-}
 
 // Extract positional args (skip --flag value pairs)
 function positionalArgs() {
@@ -70,38 +63,113 @@ async function getStore() {
   return _store;
 }
 
-// HTTP client for sync server
-async function apiGet(path) {
-  const res = await fetch(`${API_BASE}${path}`, {
-    headers: withAuthHeaders()
+async function getLocalDoc() {
+  const store = await getStore();
+  return store.getDoc();
+}
+
+function isTransportFailure(error) {
+  return error instanceof SyncRequestError && error.isTransport;
+}
+
+async function apiRequest(path, options = {}) {
+  const { method = 'GET', headers = {}, body, parseJson = true } = options;
+  return requestJson(API_BASE, path, {
+    method,
+    headers,
+    body,
+    parseJson,
+    token: API_TOKEN,
+    closeConnection: true
   });
-  if (!res.ok) throw new Error(`API error: ${res.status}`);
-  return res.json();
+}
+
+async function apiGet(path) {
+  return apiRequest(path);
 }
 
 async function apiPost(path, body) {
-  const res = await fetch(`${API_BASE}${path}`, {
+  return apiRequest(path, {
     method: 'POST',
-    headers: withAuthHeaders({ 'Content-Type': 'application/json' }),
+    headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body)
   });
-  if (!res.ok) {
-    const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
-    throw new Error(err.error || `API error: ${res.status}`);
-  }
-  return res.json();
 }
 
-// Get document via HTTP (preferred) or fallback to store
-async function getDoc() {
+async function apiPatch(path, body) {
+  return apiRequest(path, {
+    method: 'PATCH',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+}
+
+async function apiDelete(path) {
+  return apiRequest(path, { method: 'DELETE' });
+}
+
+async function withStoreFallback(requestFn, fallbackFn) {
   try {
-    const data = await apiGet('/automerge/doc');
-    if (data.success && data.doc) return data.doc;
-  } catch (e) {
-    // HTTP failed, try direct store
+    return await requestFn();
+  } catch (error) {
+    if (!isTransportFailure(error)) throw error;
+    return fallbackFn(error);
   }
-  const store = await getStore();
-  return store.getDoc();
+}
+
+// Get document via HTTP (preferred) or fallback to store only on transport errors.
+async function getDoc() {
+  const data = await withStoreFallback(
+    () => apiGet('/automerge/doc'),
+    async () => ({ success: true, doc: await getLocalDoc() })
+  );
+
+  if (data.success && data.doc) return data.doc;
+  throw new Error('Invalid document response from sync server');
+}
+
+async function addCommentWithFallback(taskId, text, agent) {
+  return withStoreFallback(
+    async () => {
+      const data = await apiPost('/automerge/comment', { taskId, text, agent });
+      return { commentId: data.commentId, viaStore: false };
+    },
+    async () => {
+      const store = await getStore();
+      const commentId = await store.addComment(taskId, text, agent);
+      return { commentId, viaStore: true };
+    }
+  );
+}
+
+async function getPendingMentionsWithFallback(agent) {
+  const url = agent
+    ? `/automerge/mentions/pending?agent=${encodeURIComponent(agent)}`
+    : '/automerge/mentions/pending';
+
+  return withStoreFallback(
+    async () => {
+      const data = await apiGet(url);
+      return data.mentions || [];
+    },
+    async () => {
+      const store = await getStore();
+      return store.getPendingMentions(agent);
+    }
+  );
+}
+
+async function getTaskHistoryWithFallback(taskId) {
+  return withStoreFallback(
+    async () => {
+      const data = await apiGet(`/automerge/task/${taskId}/history`);
+      return data.history || [];
+    },
+    async () => {
+      const store = await getStore();
+      return store.getTaskHistory(taskId);
+    }
+  );
 }
 
 function usage() {
@@ -205,15 +273,8 @@ async function main() {
         process.exit(1);
       }
       
-      try {
-        const data = await apiPost('/automerge/comment', { taskId, text: message, agent });
-        console.log(`✅ Comment added: ${data.commentId}`);
-      } catch (e) {
-        // Fallback to direct store
-        const store = await getStore();
-        const commentId = await store.addComment(taskId, message, agent);
-        console.log(`✅ Comment added: ${commentId} (via store)`);
-      }
+      const result = await addCommentWithFallback(taskId, message, agent);
+      console.log(`✅ Comment added: ${result.commentId}${result.viaStore ? ' (via store)' : ''}`);
       
       const mentions = message.match(/@(\w+)/g) || [];
       if (mentions.length > 0) {
@@ -259,11 +320,7 @@ async function main() {
         process.exit(1);
       }
       
-      const res = await fetch(`${API_BASE}/automerge/comment/${commentId}`, {
-        method: 'DELETE',
-        headers: withAuthHeaders()
-      });
-      const data = await res.json();
+      const data = await apiDelete(`/automerge/comment/${commentId}`);
       if (data.success) {
         console.log(`Deleted comment ${commentId}`);
       } else {
@@ -287,40 +344,17 @@ async function main() {
         agent = getArg('agent');
       }
       
-      // Try HTTP API first
-      try {
-        const url = agent 
-          ? `/automerge/mentions/pending?agent=${encodeURIComponent(agent)}`
-          : '/automerge/mentions/pending';
-        const data = await apiGet(url);
-        const mentions = data.mentions || [];
-        
-        if (mentions.length === 0) {
-          console.log('No pending mentions.');
-        } else {
-          console.log(`${mentions.length} pending mention(s):\n`);
-          for (const m of mentions) {
-            console.log(`[${m.id}] @${m.to_agent} from @${m.from_agent}`);
-            console.log(`   Task: ${m.task_id}`);
-            console.log(`   "${m.content.substring(0, 80)}${m.content.length > 80 ? '...' : ''}"`);
-            console.log(`   ${formatTime(m.timestamp)}\n`);
-          }
-        }
-      } catch (e) {
-        // Fallback to store
-        const store = await getStore();
-        const mentions = await store.getPendingMentions(agent);
-        
-        if (mentions.length === 0) {
-          console.log('No pending mentions.');
-        } else {
-          console.log(`${mentions.length} pending mention(s):\n`);
-          for (const m of mentions) {
-            console.log(`[${m.id}] @${m.to_agent} from @${m.from_agent}`);
-            console.log(`   Task: ${m.task_id}`);
-            console.log(`   "${m.content.substring(0, 80)}${m.content.length > 80 ? '...' : ''}"`);
-            console.log(`   ${formatTime(m.timestamp)}\n`);
-          }
+      const mentions = await getPendingMentionsWithFallback(agent);
+      
+      if (mentions.length === 0) {
+        console.log('No pending mentions.');
+      } else {
+        console.log(`${mentions.length} pending mention(s):\n`);
+        for (const m of mentions) {
+          console.log(`[${m.id}] @${m.to_agent} from @${m.from_agent}`);
+          console.log(`   Task: ${m.task_id}`);
+          console.log(`   "${m.content.substring(0, 80)}${m.content.length > 80 ? '...' : ''}"`);
+          console.log(`   ${formatTime(m.timestamp)}\n`);
         }
       }
     }
@@ -551,8 +585,7 @@ async function main() {
       
       // Use HTTP API for history
       try {
-        const data = await apiGet(`/automerge/task/${taskId}/history`);
-        const history = data.history || [];
+        const history = await getTaskHistoryWithFallback(taskId);
         
         // Merge API history with commit history from Patchwork
         const doc = await getDoc();
@@ -639,18 +672,7 @@ async function main() {
       }
       
       try {
-        const res = await fetch(`${API_BASE}/automerge/task/${taskId}`, {
-          method: 'PATCH',
-          headers: withAuthHeaders({ 'Content-Type': 'application/json' }),
-          body: JSON.stringify(updates)
-        });
-        
-        if (!res.ok) {
-          const err = await res.json().catch(() => ({ error: `HTTP ${res.status}` }));
-          throw new Error(err.error);
-        }
-        
-        const result = await res.json();
+        const result = await apiPatch(`/automerge/task/${taskId}`, updates);
         console.log(`✅ Task ${taskId} updated`);
         for (const c of result.changes || []) {
           console.log(`   ${c.field}: ${c.old || '(none)'} → ${c.new}`);

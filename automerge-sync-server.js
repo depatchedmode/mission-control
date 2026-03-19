@@ -10,8 +10,8 @@
 import { WebSocketServer } from 'ws'
 import { AutomergeStore } from './lib/automerge-store.js'
 import express from 'express'
-import cors from 'cors'
 import crypto from 'crypto'
+import { createServer } from 'node:http'
 import { fileURLToPath } from 'url'
 
 const DEFAULT_HTTP_PORT = 8004
@@ -27,13 +27,35 @@ function defaultAllowedOrigins(httpPort) {
 }
 
 function parseAllowedOrigins(value, defaults) {
+  if (value instanceof Set) return new Set(value)
+  if (Array.isArray(value)) {
+    return new Set(value.map(origin => origin.trim()).filter(Boolean))
+  }
   if (!value) return new Set(defaults)
   return new Set(
-    value
+    String(value)
       .split(',')
       .map(origin => origin.trim())
       .filter(Boolean)
   )
+}
+
+function parsePort(value, name) {
+  const parsed = Number(value)
+  if (!Number.isInteger(parsed) || parsed < 0) {
+    throw new Error(`Invalid ${name}: ${value}`)
+  }
+  return parsed
+}
+
+function appendHeaderValue(existing, value) {
+  if (!existing) return value
+  const values = String(existing)
+    .split(',')
+    .map(item => item.trim())
+    .filter(Boolean)
+  if (values.includes(value)) return String(existing)
+  return `${existing}, ${value}`
 }
 
 function getBearerToken(authorizationHeader = '') {
@@ -42,39 +64,53 @@ function getBearerToken(authorizationHeader = '') {
 }
 
 class AutomergeSyncServer {
-  constructor() {
-    this.store = new AutomergeStore()
+  constructor(options = {}) {
+    const env = options.env ?? process.env
+    const storeOptions = {}
+    if (options.storagePath !== undefined) storeOptions.storagePath = options.storagePath
+    if (options.urlFile !== undefined) storeOptions.urlFile = options.urlFile
+    if (options.usePersistedUrl !== undefined) storeOptions.usePersistedUrl = options.usePersistedUrl
+
+    this.store = options.store || new AutomergeStore(storeOptions)
     this.connectedClients = new Set()
     this.app = express()
     this.wss = null
     this.httpServer = null
-    this.host = process.env.MC_BIND_HOST || '127.0.0.1'
-    this.httpPort = Number.parseInt(process.env.MC_HTTP_PORT || `${DEFAULT_HTTP_PORT}`, 10)
-    this.wsPort = Number.parseInt(process.env.MC_WS_PORT || `${DEFAULT_WS_PORT}`, 10)
-    this.apiToken = process.env.MC_API_TOKEN || ''
-    this.allowInsecureLocal = process.env.MC_ALLOW_INSECURE_LOCAL === '1'
-    this.allowLegacyWsQueryToken = process.env.MC_ALLOW_LEGACY_WS_QUERY_TOKEN === '1'
-    this.wsTicketTtlMs = Number.parseInt(process.env.MC_WS_TICKET_TTL_MS || '60000', 10)
+    this.wsHttpServer = null
+    this.host = options.host ?? env.MC_BIND_HOST ?? '127.0.0.1'
+    this.httpPort = parsePort(options.httpPort ?? env.MC_HTTP_PORT ?? DEFAULT_HTTP_PORT, 'MC_HTTP_PORT')
+    this.wsPort = parsePort(options.wsPort ?? env.MC_WS_PORT ?? DEFAULT_WS_PORT, 'MC_WS_PORT')
+    this.apiToken = options.apiToken ?? env.MC_API_TOKEN ?? ''
+    this.allowInsecureLocal = options.allowInsecureLocal ?? env.MC_ALLOW_INSECURE_LOCAL === '1'
+    this.allowLegacyWsQueryToken = options.allowLegacyWsQueryToken ?? env.MC_ALLOW_LEGACY_WS_QUERY_TOKEN === '1'
+    this.wsTicketTtlMs = Number(
+      options.wsTicketTtlMs ?? env.MC_WS_TICKET_TTL_MS ?? 60000
+    )
+    this.logger = options.logger ?? console
     this.wsTickets = new Map()
+    this.securityCounters = {
+      httpUnauthorized: 0,
+      httpOriginRejected: 0,
+      wsUnauthorized: 0,
+      wsOriginRejected: 0
+    }
     this.allowedOrigins = parseAllowedOrigins(
-      process.env.MC_ALLOWED_ORIGINS || '',
+      options.allowedOrigins ?? env.MC_ALLOWED_ORIGINS ?? '',
       defaultAllowedOrigins(this.httpPort)
     )
-
-    if (!Number.isInteger(this.httpPort) || this.httpPort <= 0) {
-      throw new Error(`Invalid MC_HTTP_PORT: ${process.env.MC_HTTP_PORT}`)
-    }
-    if (!Number.isInteger(this.wsPort) || this.wsPort <= 0) {
-      throw new Error(`Invalid MC_WS_PORT: ${process.env.MC_WS_PORT}`)
-    }
 
     if (!this.apiToken && !this.allowInsecureLocal) {
       throw new Error(
         'MC_API_TOKEN is required. To bypass for local-only testing, set MC_ALLOW_INSECURE_LOCAL=1.'
       )
     }
+    if (this.allowedOrigins.has('*')) {
+      throw new Error(
+        'MC_ALLOWED_ORIGINS must be an explicit comma-separated allowlist. Wildcard "*" is not supported.'
+      )
+    }
     if (!Number.isInteger(this.wsTicketTtlMs) || this.wsTicketTtlMs <= 0) {
-      throw new Error(`Invalid MC_WS_TICKET_TTL_MS: ${process.env.MC_WS_TICKET_TTL_MS}`)
+      throw new Error(`Invalid MC_WS_TICKET_TTL_MS: ${env.MC_WS_TICKET_TTL_MS}`)
     }
   }
   
@@ -92,21 +128,110 @@ class AutomergeSyncServer {
     this.setupWebSocketServer()
     
     // Start HTTP server
-    this.httpServer = this.app.listen(this.httpPort, this.host, () => {
-      console.log(`📡 HTTP API listening on ${this.host}:${this.httpPort}`)
-      console.log(`🌐 WebSocket sync on ${this.host}:${this.wsPort}`)
-      console.log(`🔐 Auth mode: ${this.apiToken ? 'token required' : 'disabled (unsafe local mode)'}`)
-      console.log(`🌍 Allowed CORS origins: ${this.allowedOrigins.size === 0 ? '(none)' : [...this.allowedOrigins].join(', ')}`)
+    this.httpServer = await new Promise((resolve, reject) => {
+      const server = this.app.listen(this.httpPort, this.host, () => resolve(server))
+      server.once('error', reject)
     })
+    this.httpPort = this.getBoundPort(this.httpServer, this.httpPort)
+
+    this.wsHttpServer = await new Promise((resolve, reject) => {
+      const server = this.wsHttpServer.listen(this.wsPort, this.host, () => resolve(this.wsHttpServer))
+      server.once('error', reject)
+    })
+    this.wsPort = this.getBoundPort(this.wsHttpServer, this.wsPort)
+
+    console.log(`📡 HTTP API listening on ${this.host}:${this.httpPort}`)
+    console.log(`🌐 WebSocket sync on ${this.host}:${this.wsPort}`)
+    console.log(`🔐 Auth mode: ${this.apiToken ? 'token required' : 'disabled (unsafe local mode)'}`)
+    console.log(`🌍 Allowed CORS origins: ${this.allowedOrigins.size === 0 ? '(none)' : [...this.allowedOrigins].join(', ')}`)
     
     // Register default agents if not exists
     await this.initializeDefaultAgents()
   }
 
+  getBoundPort(server, fallbackPort) {
+    const address = server?.address?.()
+    if (address && typeof address === 'object' && Number.isInteger(address.port)) {
+      return address.port
+    }
+    return fallbackPort
+  }
+
+  async stop() {
+    for (const client of this.connectedClients) {
+      try {
+        client.terminate()
+      } catch {
+        // Ignore client shutdown errors during teardown.
+      }
+    }
+    this.connectedClients.clear()
+
+    if (this.wss) {
+      await new Promise(resolve => this.wss.close(() => resolve()))
+      this.wss = null
+    }
+
+    await this.closeServer(this.wsHttpServer)
+    await this.closeServer(this.httpServer)
+    this.wsHttpServer = null
+    this.httpServer = null
+
+    await this.store.close()
+  }
+
+  async closeServer(server) {
+    if (!server?.listening) return
+    await new Promise((resolve, reject) => {
+      server.close(error => {
+        if (error) return reject(error)
+        resolve()
+      })
+    })
+  }
+
   isAllowedOrigin(origin) {
     if (!origin) return true
-    if (this.allowedOrigins.has('*')) return true
     return this.allowedOrigins.has(origin)
+  }
+
+  applyCorsHeaders(res, origin) {
+    if (!origin) return
+    res.setHeader('Access-Control-Allow-Origin', origin)
+    res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, X-MC-Token')
+    res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PATCH,DELETE,OPTIONS')
+    res.setHeader('Access-Control-Max-Age', '600')
+    res.setHeader('Vary', appendHeaderValue(res.getHeader('Vary'), 'Origin'))
+  }
+
+  recordSecurityEvent(type, message) {
+    if (type in this.securityCounters) {
+      this.securityCounters[type] += 1
+    }
+    this.logger.warn?.(`[security] ${message}`)
+  }
+
+  getSecurityCounters() {
+    return { ...this.securityCounters }
+  }
+
+  originMiddleware(req, res, next) {
+    const origin = req.headers.origin
+    if (!this.isAllowedOrigin(origin)) {
+      this.recordSecurityEvent(
+        'httpOriginRejected',
+        `Rejected HTTP ${req.method} ${req.url} from origin ${origin}`
+      )
+      return res.status(403).json({ error: `Origin not allowed: ${origin}` })
+    }
+
+    this.applyCorsHeaders(res, origin)
+
+    if (req.method === 'OPTIONS') {
+      return res.status(204).end()
+    }
+
+    return next()
   }
 
   tokenFromRequest(req, options = {}) {
@@ -183,18 +308,15 @@ class AutomergeSyncServer {
     if (this.isAuthorizedRequest(req)) {
       return next()
     }
+    this.recordSecurityEvent(
+      'httpUnauthorized',
+      `Rejected unauthorized HTTP ${req.method} ${req.url}`
+    )
     return res.status(401).json({ error: 'Unauthorized' })
   }
   
   setupHTTPAPI() {
-    this.app.use(cors({
-      origin: (origin, callback) => {
-        if (this.isAllowedOrigin(origin)) {
-          return callback(null, true)
-        }
-        return callback(new Error(`Origin not allowed by CORS policy: ${origin}`))
-      }
-    }))
+    this.app.use((req, res, next) => this.originMiddleware(req, res, next))
     this.app.use(express.json())
     this.app.use((req, res, next) => this.authMiddleware(req, res, next))
     
@@ -534,15 +656,56 @@ class AutomergeSyncServer {
   }
   
   setupWebSocketServer() {
-    this.wss = new WebSocketServer({ port: this.wsPort, host: this.host })
-    
-    this.wss.on('connection', (ws, req) => {
-      if (!this.isAuthorizedWebSocketRequest(req)) {
-        ws.send(JSON.stringify({ type: 'error', error: 'Unauthorized' }))
-        ws.close(1008, 'Unauthorized')
+    this.wss = new WebSocketServer({ noServer: true })
+    this.wsHttpServer = createServer((req, res) => {
+      const origin = req.headers.origin
+
+      if (!this.isAllowedOrigin(origin)) {
+        this.recordSecurityEvent(
+          'wsOriginRejected',
+          `Rejected WS HTTP request ${req.method} ${req.url} from origin ${origin}`
+        )
+        res.statusCode = 403
+        res.setHeader('Content-Type', 'application/json')
+        res.end(JSON.stringify({ error: `Origin not allowed: ${origin}` }))
         return
       }
 
+      this.applyCorsHeaders(res, origin)
+      res.statusCode = 426
+      res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({ error: 'Expected WebSocket upgrade' }))
+    })
+
+    this.wsHttpServer.on('upgrade', (req, socket, head) => {
+      socket.on('error', () => {})
+      this.cleanupExpiredWsTickets()
+
+      const origin = req.headers.origin
+      if (!this.isAllowedOrigin(origin)) {
+        this.recordSecurityEvent(
+          'wsOriginRejected',
+          `Rejected WS upgrade ${req.url} from origin ${origin}`
+        )
+        this.rejectWebSocketUpgrade(socket, 403, 'Forbidden', { error: `Origin not allowed: ${origin}` })
+        return
+      }
+
+      if (!this.isAuthorizedWebSocketRequest(req)) {
+        this.recordSecurityEvent(
+          'wsUnauthorized',
+          `Rejected unauthorized WS upgrade ${req.url}`
+        )
+        this.rejectWebSocketUpgrade(socket, 401, 'Unauthorized', { error: 'Unauthorized' })
+        return
+      }
+
+      this.wss.handleUpgrade(req, socket, head, ws => {
+        this.wss.emit('connection', ws, req)
+      })
+    })
+    
+    this.wss.on('connection', (ws, req) => {
       console.log('🔌 Frontend client connected')
       this.connectedClients.add(ws)
       
@@ -573,6 +736,19 @@ class AutomergeSyncServer {
     })
     
     console.log('🔄 WebSocket server configured')
+  }
+
+  rejectWebSocketUpgrade(socket, statusCode, statusText, payload) {
+    const body = JSON.stringify(payload)
+    socket.write(
+      `HTTP/1.1 ${statusCode} ${statusText}\r\n` +
+      'Connection: close\r\n' +
+      'Content-Type: application/json\r\n' +
+      `Content-Length: ${Buffer.byteLength(body)}\r\n` +
+      '\r\n' +
+      body
+    )
+    socket.destroy()
   }
   
   async handleClientMessage(ws, data) {

@@ -144,7 +144,7 @@ MC_API_TOKEN="$MC_API_TOKEN" npm run daemon
 ```
 
 Optional environment settings:
-- `MC_ALLOWED_ORIGINS` (comma-separated CORS allowlist, defaults to localhost dev origins)
+- `MC_ALLOWED_ORIGINS` (comma-separated CORS allowlist, defaults to localhost dev origins; wildcard `*` is not supported)
 - `MC_BIND_HOST` (default `127.0.0.1`)
 - `MC_HTTP_PORT` (default `8004`)
 - `MC_WS_PORT` (default `8005`)
@@ -155,6 +155,12 @@ For the Vite UI, set `VITE_MC_API_TOKEN` in `ui-prototype/.env.local`. The UI no
 
 Optional compatibility setting:
 - `MC_ALLOW_LEGACY_WS_QUERY_TOKEN=1` (temporarily allow `?token=` WebSocket auth for old clients; disabled by default)
+
+Behavior notes:
+- Browser requests with an `Origin` header must match `MC_ALLOWED_ORIGINS`. Allowed preflight `OPTIONS` requests receive the same allowlisted CORS headers; disallowed origins are rejected with `403`.
+- Originless non-browser requests (for example CLI and daemon traffic) are allowed and still require auth unless `MC_ALLOW_INSECURE_LOCAL=1` is set.
+- CLI fallback to the local Automerge store only happens when the sync server is unreachable at the transport layer. If the server is reachable and returns `401`, `403`, `404`, or `500`, the CLI fails instead of bypassing server auth or policy.
+- The sync server logs rejected auth/origin checks with a `[security]` prefix and keeps in-memory counters for HTTP and WebSocket rejections, which are exposed for integration tests and runtime diagnostics.
 
 ## Migration from Beans
 
