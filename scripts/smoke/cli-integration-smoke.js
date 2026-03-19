@@ -6,6 +6,7 @@
  */
 
 import { AutomergeStore } from '../../lib/automerge-store.js'
+import { activityTaskId } from '../../lib/activity-task-id.js'
 
 async function testCliIntegration() {
   console.log('🔧 Testing MC CLI Integration with Automerge Backend\n')
@@ -62,7 +63,7 @@ async function testCliIntegration() {
   const activity = await store.getActivity({ limit: 5 })
   activity.forEach((event, i) => {
     const timeAgo = Math.floor((Date.now() - new Date(event.timestamp)) / 1000)
-    console.log(`   ${timeAgo}s ago ${event.type} @${event.agent} [${event.task_id || 'general'}]`)
+    console.log(`   ${timeAgo}s ago ${event.type} @${event.agent} [${activityTaskId(event) || 'general'}]`)
   })
   console.log('')
   

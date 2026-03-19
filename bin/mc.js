@@ -32,6 +32,7 @@
 import { AutomergeStore } from '../lib/automerge-store.js';
 import * as agentTrace from '../lib/agent-trace.js';
 import { SyncRequestError, requestJson } from '../lib/sync-client.js';
+import { activityTaskId } from '../lib/activity-task-id.js';
 
 const API_BASE = process.env.MC_SYNC_SERVER || `http://localhost:${process.env.MC_HTTP_PORT || '8004'}`;
 const API_TOKEN = process.env.MC_API_TOKEN || null;
@@ -376,7 +377,8 @@ async function main() {
         console.log('Recent activity:\n');
         for (const a of activities) {
           const agentStr = a.agent ? `@${a.agent}` : '';
-          const taskStr = a.task_id || a.taskId ? `[${a.task_id || a.taskId}]` : '';
+          const tid = activityTaskId(a);
+          const taskStr = tid ? `[${tid}]` : '';
           console.log(`  ${formatTime(a.timestamp)} ${a.type} ${agentStr} ${taskStr}`);
         }
       }
@@ -522,7 +524,7 @@ async function main() {
         timeline = timeline.filter(e => e.agent === agent);
       }
       if (taskFilter) {
-        timeline = timeline.filter(e => (e.task_id || e.taskId) === taskFilter);
+        timeline = timeline.filter(e => activityTaskId(e) === taskFilter);
       }
       
       timeline = timeline.slice(0, limit);
@@ -547,7 +549,7 @@ async function main() {
           console.log(`│`);
           console.log(`│ ${icon} ${formatTime(entry.timestamp)} - ${entry.agent ? `@${entry.agent}` : 'System'}`);
           
-          const taskId = entry.task_id || entry.taskId;
+          const taskId = activityTaskId(entry);
           if (taskId) {
             const task = doc.tasks?.[taskId];
             if (task) {
