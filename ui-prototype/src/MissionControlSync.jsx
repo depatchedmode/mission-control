@@ -1,17 +1,10 @@
 import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
+import { requestJson, withBearerAuthHeaders } from '../../lib/sync-client.js'
 
 // Global lastSeen state (single user, synced across all devices via Automerge)
 const API_TOKEN = import.meta.env.VITE_MC_API_TOKEN || null
-
-function withAuthHeaders(headers = {}) {
-  if (!API_TOKEN) return { ...headers }
-  return {
-    ...headers,
-    Authorization: `Bearer ${API_TOKEN}`
-  }
-}
 
 const PRIORITIES = [
   { value: 'p0', label: 'P0', color: '#ef4444' },
@@ -69,16 +62,11 @@ export default function MissionControlSync() {
   }
 
   const requestWebSocketTicket = async () => {
-    const response = await fetch('/mc-api/automerge/ws-ticket', {
+    const payload = await requestJson('', '/mc-api/automerge/ws-ticket', {
       method: 'POST',
-      headers: withAuthHeaders({
-        'Content-Type': 'application/json'
-      })
+      headers: { 'Content-Type': 'application/json' },
+      token: API_TOKEN
     })
-    if (!response.ok) {
-      throw new Error(`WebSocket auth ticket request failed (${response.status})`)
-    }
-    const payload = await response.json()
     if (!payload?.ticket) {
       throw new Error('WebSocket auth ticket response missing ticket')
     }
@@ -339,7 +327,7 @@ function TaskDetailModal({ task, comments, agents, onClose, onUpdate, onComment,
       // Sync to server (global lastSeen, single user)
       fetch('/mc-api/automerge/last-seen', {
         method: 'POST',
-        headers: withAuthHeaders({ 'Content-Type': 'application/json' }),
+        headers: withBearerAuthHeaders(API_TOKEN, { 'Content-Type': 'application/json' }),
         body: JSON.stringify({ taskId: task.id, timestamp: latestTimestamp })
       }).catch(() => {})
     }
