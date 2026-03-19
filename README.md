@@ -173,6 +173,10 @@ Tasks were imported during the initial migration phase. Original IDs were preser
 # Unit tests (node:test suites under test/)
 npm test
 
+# Install UI dependencies once, then verify the Vite build from repo root
+npm install --prefix ui-prototype
+npm run ui:build
+
 # Smoke scripts (manual/runtime checks)
 npm run smoke:automerge
 npm run smoke:cli

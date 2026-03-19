@@ -10,6 +10,7 @@
     "sync": "node automerge-sync-server.js",
     "test": "node --test test/*.test.js",
     "daemon": "node daemon/index.js",
+    "ui:build": "npm run build --prefix ui-prototype",
     "smoke:automerge": "node scripts/smoke/automerge-smoke.js",
     "smoke:cli": "node scripts/smoke/cli-integration-smoke.js",
     "smoke:migrated": "node scripts/smoke/migrated-data-report.js"
