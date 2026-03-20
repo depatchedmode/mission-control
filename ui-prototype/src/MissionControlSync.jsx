@@ -2,6 +2,7 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { requestJson, withBearerAuthHeaders } from '../../lib/sync-client.js'
+import { activityTaskId } from '../../lib/activity-task-id.js'
 
 // Global lastSeen state (single user, synced across all devices via Automerge)
 const API_TOKEN = import.meta.env.VITE_MC_API_TOKEN || null
@@ -198,8 +199,7 @@ export default function MissionControlSync() {
           comments={getTaskComments(selectedTask.id)}
           agents={agents}
           taskHistory={(doc.taskHistory || {})[selectedTask.id] || []}
-          // TODO: normalize activity events to use consistent `taskId` field at creation time
-          taskActivity={(doc.activity || []).filter(a => (a.task_id || a.taskId) === selectedTask.id)}
+          taskActivity={(doc.activity || []).filter(a => activityTaskId(a) === selectedTask.id)}
           onClose={() => setSelectedTask(null)}
           onUpdate={updateTask}
           onComment={addComment}
@@ -651,7 +651,7 @@ function ActivityView({ doc, onSelectTask }) {
         if (commitHashes.has(entry.commitHash)) continue
       }
       
-      const taskId = entry.task_id || entry.taskId
+      const taskId = activityTaskId(entry)
       const task = taskId ? (doc.tasks || {})[taskId] : null
       
       events.push({
