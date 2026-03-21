@@ -43,7 +43,7 @@ async function testCliIntegration() {
   console.log(`   📬 ${garyMentions.length} pending mention(s) for gary:`)
   garyMentions.forEach(mention => {
     const timeAgo = Math.floor((Date.now() - new Date(mention.timestamp)) / 1000)
-    console.log(`   [${mention.id}] @${mention.to_agent} from @${mention.from_agent} on ${mention.task_id}`)
+    console.log(`   [${mention.id}] @${mention.to_agent} from @${mention.from_agent} on ${mention.taskId}`)
     console.log(`      "${mention.content}"`)
     console.log(`      ${timeAgo}s ago\n`)
   })

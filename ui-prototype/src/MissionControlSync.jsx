@@ -124,7 +124,7 @@ export default function MissionControlSync() {
   const reviewTasks = sortTasks(tasks.filter(t => t.status === 'review'))
   const completedTasks = sortTasks(tasks.filter(t => t.status === 'completed'))
   
-  const getTaskComments = (taskId) => comments.filter(c => c.task_id === taskId).sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp))
+  const getTaskComments = (taskId) => comments.filter(c => c.taskId === taskId).sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp))
   
   const getUnreadCount = (taskId) => {
     const taskComments = getTaskComments(taskId)

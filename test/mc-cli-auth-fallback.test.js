@@ -51,7 +51,7 @@ async function seedTaskStore(cwd) {
 async function readStore(cwd) {
   const store = new AutomergeStore(storePaths(cwd))
   await store.init()
-  const doc = store.getDoc()
+  const doc = store.docHandle.doc()
   await store.close()
   return doc
 }
@@ -192,5 +192,7 @@ describe('mc CLI sync-server fallback hardening', () => {
     const comments = Object.values(doc.comments || {})
     assert.equal(comments.length, 1)
     assert.equal(comments[0].content, 'offline comment')
+    assert.equal(comments[0].taskId, 'local-task-1')
+    assert.ok(!('task_id' in comments[0]))
   })
 })

@@ -95,7 +95,7 @@ async function processMentions() {
       continue;
     }
     
-    const message = `📬 @${mention.from_agent} mentioned you on ${mention.task_id}: "${mention.content.substring(0, 100)}..."`;
+    const message = `📬 @${mention.from_agent} mentioned you on ${mention.taskId}: "${mention.content.substring(0, 100)}..."`;
     
     const success = await wakeAgent(mention.to_agent, message);
     

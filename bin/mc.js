@@ -296,7 +296,7 @@ async function main() {
       
       const doc = await getDoc();
       const comments = Object.values(doc.comments || {})
-        .filter(c => c.task_id === taskId)
+        .filter(c => c.taskId === taskId)
         .sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp));
       
       if (comments.length === 0) {
@@ -353,7 +353,7 @@ async function main() {
         console.log(`${mentions.length} pending mention(s):\n`);
         for (const m of mentions) {
           console.log(`[${m.id}] @${m.to_agent} from @${m.from_agent}`);
-          console.log(`   Task: ${m.task_id}`);
+          console.log(`   Task: ${m.taskId}`);
           console.log(`   "${m.content.substring(0, 80)}${m.content.length > 80 ? '...' : ''}"`);
           console.log(`   ${formatTime(m.timestamp)}\n`);
         }
@@ -440,7 +440,7 @@ async function main() {
       }
       
       const comments = Object.values(doc.comments || {})
-        .filter(c => c.task_id === taskId)
+        .filter(c => c.taskId === taskId)
         .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
         .slice(0, 3);
       
