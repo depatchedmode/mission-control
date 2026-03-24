@@ -2,9 +2,9 @@
 
 /**
  * Automerge Sync Server
- * 
- * Bridges frontend Automerge (browser) with backend AutomergeStore (Node.js)
- * Provides real-time sync between UI and backend data persistence
+ *
+ * Supported runtime state authority for Mission Control.
+ * CLI, daemon, and UI clients all talk to this process.
  */
 
 import { WebSocketServer } from 'ws'
@@ -601,6 +601,28 @@ class AutomergeSyncServer {
         const { taskId } = req.params
         const history = await this.store.getTaskHistory(taskId)
         res.json({ history })
+      } catch (error) {
+        res.status(500).json({ error: error.message })
+      }
+    })
+
+    // ─── Patchwork: Link Commit ───
+    this.app.post('/automerge/task/:taskId/commit', async (req, res) => {
+      try {
+        const { taskId } = req.params
+        const { commit, agent } = req.body
+        const doc = this.store.getDoc()
+
+        if (!commit?.hash || !commit?.message) {
+          return res.status(400).json({ error: 'commit.hash and commit.message are required' })
+        }
+        if (!doc.tasks?.[taskId]) {
+          return res.status(404).json({ error: `Task ${taskId} not found` })
+        }
+
+        await this.store.recordCommit(taskId, commit, agent || 'api')
+        this.broadcastDocumentUpdate()
+        res.json({ success: true, taskId, commitHash: commit.hash })
       } catch (error) {
         res.status(500).json({ error: error.message })
       }
