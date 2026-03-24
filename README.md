@@ -19,7 +19,7 @@ Task tracking and coordination system built on Automerge CRDTs. Replaces beans w
               ┌─────────────────┼─────────────────┐
               ▼                 ▼                 ▼
         ┌─────────┐      ┌───────────┐     ┌──────────┐
-        │ mc CLI  │      │ Sync Srv  │     │ UI Proto │
+        │ mc CLI  │      │ Sync Srv  │     │ UI Dev   │
         └─────────┘      └───────────┘     └──────────┘
 ```
 
@@ -28,18 +28,20 @@ Task tracking and coordination system built on Automerge CRDTs. Replaces beans w
 | Component | Location | Purpose |
 |-----------|----------|---------|
 | **mc CLI** | `bin/mc.js` | Primary interface for task management |
-| **Automerge Store** | `lib/automerge-store.js` | CRDT-based persistent storage |
-| **Sync Server** | `automerge-sync-server.js` | Canonical HTTP/WebSocket runtime |
-| **Notification Daemon** | `daemon/index.js` | Mention delivery worker |
-| **UI Prototype** | `ui-prototype/src/MissionControlSync.jsx` | React dashboard client |
+| **Automerge Store** | `lib/automerge-store.js` | Internal persistence layer behind the sync server |
+| **Sync Server** | `automerge-sync-server.js` | Supported HTTP/WebSocket state authority |
+| **Notification Daemon** | `daemon/index.js` | Supported mention-delivery worker |
+| **UI Dev Client** | `ui-prototype/src/MissionControlSync.jsx` | Supported development UI client |
 
-### Supported Runtime Paths
+### Supported Runtime
 
 Mission Control supports one runtime architecture:
 
 1. Start `automerge-sync-server.js` (HTTP + WebSocket state authority).
 2. Point CLI/daemon to that server (`MC_SYNC_SERVER` or `MC_HTTP_PORT`).
 3. Run UI through Vite proxy (`/mc-api` + `/mc-ws`).
+
+Anything that bypasses the sync server, including direct local-store access from CLI workflows, is not a supported runtime path.
 
 ## CLI Reference
 
@@ -92,11 +94,11 @@ npm install
 # Symlink for easy access
 ln -s $(pwd)/bin/mc.js ~/bin/mc
 
-# Start sync server (required for shared runtime)
+# Start the supported runtime state authority
 export MC_API_TOKEN="$(openssl rand -hex 32)"
 MC_API_TOKEN="$MC_API_TOKEN" npm run sync
 
-# List tasks
+# Use the CLI with the same token
 MC_API_TOKEN="$MC_API_TOKEN" mc tasks
 
 # Create a task
@@ -107,6 +109,10 @@ MC_API_TOKEN="$MC_API_TOKEN" mc comment <task-id> "Working on this now"
 
 # Check activity
 MC_API_TOKEN="$MC_API_TOKEN" mc activity --limit 10
+
+# Optional supported workers/clients
+MC_API_TOKEN="$MC_API_TOKEN" npm run daemon
+VITE_MC_API_TOKEN="$MC_API_TOKEN" npm run dev --prefix ui-prototype
 ```
 
 ## Data Storage
@@ -159,7 +165,7 @@ Optional compatibility setting:
 Behavior notes:
 - Browser requests with an `Origin` header must match `MC_ALLOWED_ORIGINS`. Allowed preflight `OPTIONS` requests receive the same allowlisted CORS headers; disallowed origins are rejected with `403`.
 - Originless non-browser requests (for example CLI and daemon traffic) are allowed and still require auth unless `MC_ALLOW_INSECURE_LOCAL=1` is set.
-- CLI fallback to the local Automerge store only happens when the sync server is unreachable at the transport layer. If the server is reachable and returns `401`, `403`, `404`, or `500`, the CLI fails instead of bypassing server auth or policy.
+- CLI and daemon commands fail fast when the sync server is unreachable; they do not fall back to direct local-store access.
 - The sync server logs rejected auth/origin checks with a `[security]` prefix and keeps in-memory counters for HTTP and WebSocket rejections, which are exposed for integration tests and runtime diagnostics.
 
 ## Migration from Beans
@@ -176,14 +182,9 @@ npm test
 # Install UI dependencies once, then verify the Vite build from repo root
 npm install --prefix ui-prototype
 npm run ui:build
-
-# Smoke scripts (manual/runtime checks)
-npm run smoke:automerge
-npm run smoke:cli
-
-# Report against an existing migrated document URL
-MC_TEST_DOC_URL="<automerge-url>" npm run smoke:migrated
 ```
+
+Archived migration/demo scripts under `scripts/smoke/` are retained for internal reference only and are not part of the supported runtime flow.
 
 ### Sync Server
 ```bash
@@ -203,7 +204,7 @@ See [docs/ROADMAP.md](docs/ROADMAP.md) for details.
 - ✅ Real-time sync (WebSocket)
 - ✅ Patchwork timeline/branching
 - ✅ Agent Trace (commit attribution)
-- 🔄 UI prototype (built, not deployed)
+- 🔄 UI development client (built, not deployed)
 
 ## License
 

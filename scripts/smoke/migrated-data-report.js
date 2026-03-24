@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 
 /**
- * Test Mission Control with real migrated data
+ * Internal archived script.
+ * Kept for migration/demo reference only; not part of the supported runtime flow.
  */
 
 import { AutomergeStore } from '../../lib/automerge-store.js'
