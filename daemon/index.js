@@ -2,9 +2,9 @@
 
 /**
  * Mission Control Notification Daemon v2
- * 
- * Uses the Automerge Sync Server HTTP API for real-time state.
- * Polls for pending mentions and delivers via OpenClaw cron wake.
+ *
+ * Supported runtime worker for Mission Control.
+ * Polls the sync server for pending mentions and delivers them via OpenClaw cron wake.
  */
 
 import { requestJson } from '../lib/sync-client.js'
@@ -22,6 +22,11 @@ function log(msg) {
 
 function debug(msg) {
   if (VERBOSE) log(`[debug] ${msg}`);
+}
+
+function printSupportedRuntimeHint() {
+  log('   Start the supported runtime with `npm run sync`, or make sure MC_SYNC_SERVER points to a reachable server.')
+  log('   If auth is enabled, run the daemon with the same MC_API_TOKEN as the sync server.')
 }
 
 async function getDocument() {
@@ -125,7 +130,7 @@ async function runDaemon() {
     log(`   Agents: ${agentCount}, Pending mentions: ${pendingCount}`);
   } catch (err) {
     log(`❌ Cannot connect to sync server: ${err.message}`);
-    log(`   Make sure mc-sync is running: pm2 start automerge-sync-server.js --name mc-sync`);
+    printSupportedRuntimeHint();
     process.exit(1);
   }
   

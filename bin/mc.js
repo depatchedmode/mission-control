@@ -1,11 +1,13 @@
 #!/usr/bin/env node
 
 /**
- * Mission Control CLI (HTTP-first, Automerge backend)
- * 
- * Uses sync server HTTP API by default to prevent split-brain.
- * Falls back to direct store access only when sync server unavailable.
- * 
+ * Mission Control CLI
+ *
+ * Supported runtime path:
+ * - automerge-sync-server.js is the state authority
+ * - CLI commands talk to the sync server over HTTP
+ * - UI connects through the sync server's HTTP/WebSocket APIs
+ *
  * Usage:
  *   mc comment <task-id> "message"
  *   mc comments <task-id>
@@ -29,7 +31,6 @@
  *   mc trace task <task-id>              Show commits linked to a task
  */
 
-import { AutomergeStore } from '../lib/automerge-store.js';
 import * as agentTrace from '../lib/agent-trace.js';
 import { SyncRequestError, requestJson } from '../lib/sync-client.js';
 import { activityTaskId } from '../lib/activity-task-id.js';
@@ -54,23 +55,21 @@ function positionalArgs() {
   return result;
 }
 
-// Lazy-loaded store (only init when HTTP unavailable)
-let _store = null;
-async function getStore() {
-  if (!_store) {
-    _store = new AutomergeStore();
-    await _store.init();
-  }
-  return _store;
-}
-
-async function getLocalDoc() {
-  const store = await getStore();
-  return store.getDoc();
-}
-
 function isTransportFailure(error) {
   return error instanceof SyncRequestError && error.isTransport;
+}
+
+function printSyncRuntimeHint() {
+  console.error(`   Sync server: ${API_BASE}`);
+  console.error('   Start the supported runtime with `npm run sync`, or make sure MC_SYNC_SERVER points to a reachable server.');
+  console.error('   If auth is enabled, use the same MC_API_TOKEN for the server and this command.');
+}
+
+function printCommandError(prefix, error) {
+  console.error(`${prefix}: ${error.message}`);
+  if (isTransportFailure(error)) {
+    printSyncRuntimeHint();
+  }
 }
 
 async function apiRequest(path, options = {}) {
@@ -109,68 +108,36 @@ async function apiDelete(path) {
   return apiRequest(path, { method: 'DELETE' });
 }
 
-async function withStoreFallback(requestFn, fallbackFn) {
-  try {
-    return await requestFn();
-  } catch (error) {
-    if (!isTransportFailure(error)) throw error;
-    return fallbackFn(error);
-  }
-}
-
-// Get document via HTTP (preferred) or fallback to store only on transport errors.
 async function getDoc() {
-  const data = await withStoreFallback(
-    () => apiGet('/automerge/doc'),
-    async () => ({ success: true, doc: await getLocalDoc() })
-  );
-
+  const data = await apiGet('/automerge/doc');
   if (data.success && data.doc) return data.doc;
   throw new Error('Invalid document response from sync server');
 }
 
-async function addCommentWithFallback(taskId, text, agent) {
-  return withStoreFallback(
-    async () => {
-      const data = await apiPost('/automerge/comment', { taskId, text, agent });
-      return { commentId: data.commentId, viaStore: false };
-    },
-    async () => {
-      const store = await getStore();
-      const commentId = await store.addComment(taskId, text, agent);
-      return { commentId, viaStore: true };
-    }
-  );
+async function addComment(taskId, text, agent) {
+  const data = await apiPost('/automerge/comment', { taskId, text, agent });
+  return { commentId: data.commentId };
 }
 
-async function getPendingMentionsWithFallback(agent) {
+async function getPendingMentions(agent) {
   const url = agent
     ? `/automerge/mentions/pending?agent=${encodeURIComponent(agent)}`
     : '/automerge/mentions/pending';
 
-  return withStoreFallback(
-    async () => {
-      const data = await apiGet(url);
-      return data.mentions || [];
-    },
-    async () => {
-      const store = await getStore();
-      return store.getPendingMentions(agent);
-    }
-  );
+  const data = await apiGet(url);
+  return data.mentions || [];
 }
 
-async function getTaskHistoryWithFallback(taskId) {
-  return withStoreFallback(
-    async () => {
-      const data = await apiGet(`/automerge/task/${taskId}/history`);
-      return data.history || [];
-    },
-    async () => {
-      const store = await getStore();
-      return store.getTaskHistory(taskId);
-    }
-  );
+async function getTaskHistory(taskId) {
+  const data = await apiGet(`/automerge/task/${taskId}/history`);
+  return data.history || [];
+}
+
+async function ensureTaskLinkReady(taskId) {
+  const doc = await getDoc();
+  if (!doc.tasks?.[taskId]) {
+    throw new Error(`Task ${taskId} not found on sync server`);
+  }
 }
 
 function usage() {
@@ -259,11 +226,10 @@ async function main() {
     process.exit(0);
   }
 
-  try {
-    // ─────────────────────────────────────────
-    // mc comment <task-id> "message"
-    // ─────────────────────────────────────────
-    if (command === 'comment') {
+  // ─────────────────────────────────────────
+  // mc comment <task-id> "message"
+  // ─────────────────────────────────────────
+  if (command === 'comment') {
       const posArgs = positionalArgs();
       const taskId = posArgs[1];
       const message = posArgs[2];
@@ -274,8 +240,8 @@ async function main() {
         process.exit(1);
       }
       
-      const result = await addCommentWithFallback(taskId, message, agent);
-      console.log(`✅ Comment added: ${result.commentId}${result.viaStore ? ' (via store)' : ''}`);
+      const result = await addComment(taskId, message, agent);
+      console.log(`✅ Comment added: ${result.commentId}`);
       
       const mentions = message.match(/@(\w+)/g) || [];
       if (mentions.length > 0) {
@@ -345,7 +311,7 @@ async function main() {
         agent = getArg('agent');
       }
       
-      const mentions = await getPendingMentionsWithFallback(agent);
+      const mentions = await getPendingMentions(agent);
       
       if (mentions.length === 0) {
         console.log('No pending mentions.');
@@ -587,7 +553,7 @@ async function main() {
       
       // Use HTTP API for history
       try {
-        const history = await getTaskHistoryWithFallback(taskId);
+        const history = await getTaskHistory(taskId);
         
         // Merge API history with commit history from Patchwork
         const doc = await getDoc();
@@ -638,7 +604,7 @@ async function main() {
           console.log();
         }
       } catch (e) {
-        console.error(`❌ Failed to get history: ${e.message}`);
+        printCommandError('❌ Failed to get history', e);
         process.exit(1);
       }
     }
@@ -680,7 +646,7 @@ async function main() {
           console.log(`   ${c.field}: ${c.old || '(none)'} → ${c.new}`);
         }
       } catch (e) {
-        console.error(`❌ Failed: ${e.message}`);
+        printCommandError('❌ Failed', e);
         process.exit(1);
       }
     }
@@ -708,7 +674,7 @@ async function main() {
           console.log(`\n   Work on the branch, then merge with: mc merge ${result.branchId}`);
         }
       } catch (e) {
-        console.error(`❌ Failed to create branch: ${e.message}`);
+        printCommandError('❌ Failed to create branch', e);
         process.exit(1);
       }
     }
@@ -742,7 +708,7 @@ async function main() {
           }
         }
       } catch (e) {
-        console.error(`❌ Failed to list branches: ${e.message}`);
+        printCommandError('❌ Failed to list branches', e);
         process.exit(1);
       }
     }
@@ -765,7 +731,7 @@ async function main() {
         console.log(`   ${branchId} → ${result.parentId}`);
         console.log(`   Changes applied to parent task`);
       } catch (e) {
-        console.error(`❌ Failed to merge: ${e.message}`);
+        printCommandError('❌ Failed to merge', e);
         process.exit(1);
       }
     }
@@ -794,8 +760,7 @@ async function main() {
         if (assignee) console.log(`   Assignee: @${assignee}`);
         if (tags.length) console.log(`   Tags: ${tags.join(', ')}`);
       } catch (e) {
-        console.error(`❌ Failed: ${e.message}`);
-        console.error('   Is the sync server running? (pm2 start mc-sync)');
+        printCommandError('❌ Failed', e);
         process.exit(1);
       }
     }
@@ -817,6 +782,15 @@ async function main() {
       const agent = getArg('agent', process.env.MC_AGENT || 'unknown');
       const model = getArg('model', process.env.OPENCLAW_MODEL || null);
       const sessionKey = getArg('session', process.env.OPENCLAW_SESSION_KEY || null);
+
+      if (taskId) {
+        try {
+          await ensureTaskLinkReady(taskId);
+        } catch (err) {
+          printCommandError('❌ Cannot link commit to task', err);
+          process.exit(1);
+        }
+      }
       
       // Build git args (remove our custom flags)
       const gitArgs = [];
@@ -848,7 +822,7 @@ async function main() {
       }
       
       // Create trace record
-      const { filepath, trace } = agentTrace.createTrace({
+      const { trace } = agentTrace.createTrace({
         repoPath,
         commitHash: commitInfo.hash,
         commitMessage: commitInfo.message,
@@ -868,18 +842,21 @@ async function main() {
       // Link commit to Patchwork timeline if task specified
       if (taskId) {
         try {
-          const store = new AutomergeStore();
-          await store.init();
-          await store.recordCommit(taskId, {
-            hash: commitInfo.hash,
-            message: commitInfo.message,
-            diff: diffStats
-          }, agent);
-          await store.close();
+          await apiPost(`/automerge/task/${taskId}/commit`, {
+            commit: {
+              hash: commitInfo.hash,
+              message: commitInfo.message,
+              diff: diffStats
+            },
+            agent
+          });
           console.log(`   📎 Linked to Patchwork timeline`);
         } catch (err) {
-          // Non-fatal — trace is already saved
-          console.error(`   ⚠️  Could not link to Patchwork: ${err.message}`);
+          console.error(`❌ Commit created, but Mission Control was not updated: ${err.message}`);
+          if (isTransportFailure(err)) {
+            printSyncRuntimeHint();
+          }
+          process.exit(1);
         }
       }
     }
@@ -973,9 +950,7 @@ async function main() {
         process.exit(1);
       }
       
-      // Use direct store to ensure we see latest commits
-      const store = await getStore();
-      const doc = store.getDoc();
+      const doc = await getDoc();
       const history = ((doc.taskHistory || {})[taskId] || [])
         .filter(h => h.type === 'commit');
       
@@ -1000,19 +975,14 @@ async function main() {
       }
     }
 
-    else {
-      console.error(`Unknown command: ${command}`);
-      usage();
-      process.exit(1);
-    }
-  } finally {
-    if (_store) {
-      await _store.close();
-    }
+  else {
+    console.error(`Unknown command: ${command}`);
+    usage();
+    process.exit(1);
   }
 }
 
 main().catch(err => {
-  console.error('Error:', err.message);
+  printCommandError('Error', err);
   process.exit(1);
 });

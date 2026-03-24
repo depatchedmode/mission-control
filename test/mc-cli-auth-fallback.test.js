@@ -2,9 +2,9 @@
 
 import { afterEach, describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { spawn } from 'node:child_process'
+import { execSync, spawn } from 'node:child_process'
 import { createServer } from 'node:http'
-import { mkdtempSync, rmSync } from 'node:fs'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -56,16 +56,19 @@ async function readStore(cwd) {
   return doc
 }
 
+async function startJsonServer(handler) {
+  const server = createServer(handler)
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
+  stubServers.push(server)
+  return `http://127.0.0.1:${server.address().port}`
+}
+
 async function startStubServer(statusCode, errorMessage) {
-  const server = createServer((req, res) => {
+  return startJsonServer((req, res) => {
     res.statusCode = statusCode
     res.setHeader('Content-Type', 'application/json')
     res.end(JSON.stringify({ error: errorMessage }))
   })
-
-  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve))
-  stubServers.push(server)
-  return `http://127.0.0.1:${server.address().port}`
 }
 
 async function reserveUnusedPort() {
@@ -74,6 +77,30 @@ async function reserveUnusedPort() {
   const port = server.address().port
   await new Promise(resolve => server.close(resolve))
   return port
+}
+
+function createGitRepoWithStagedChange(prefix = 'mc-cli-commit-repo-') {
+  const cwd = createTempDir(prefix)
+  execSync('git init', { cwd, stdio: 'pipe' })
+  execSync('git config user.email "test@example.com"', { cwd, stdio: 'pipe' })
+  execSync('git config user.name "Test User"', { cwd, stdio: 'pipe' })
+
+  writeFileSync(join(cwd, 'note.txt'), 'initial\n')
+  execSync('git add note.txt', { cwd, stdio: 'pipe' })
+  execSync('git commit -m "Initial commit"', { cwd, stdio: 'pipe' })
+
+  writeFileSync(join(cwd, 'note.txt'), 'changed\n')
+  execSync('git add note.txt', { cwd, stdio: 'pipe' })
+
+  return cwd
+}
+
+function gitCommitCount(cwd) {
+  return Number(execSync('git rev-list --count HEAD', {
+    cwd,
+    encoding: 'utf-8',
+    stdio: 'pipe',
+  }).trim())
 }
 
 function runCli(cwd, args, env = {}) {
@@ -125,7 +152,7 @@ afterEach(async () => {
   }
 })
 
-describe('mc CLI sync-server fallback hardening', () => {
+describe('mc CLI supported runtime enforcement', () => {
   it('does not fall back to the local store for reachable server HTTP errors on read commands', async () => {
     const cwd = createTempDir()
     await seedTaskStore(cwd)
@@ -162,7 +189,7 @@ describe('mc CLI sync-server fallback hardening', () => {
     assert.equal(Object.keys(doc.comments || {}).length, 0)
   })
 
-  it('falls back to the local store when the sync server is unreachable for read commands', async () => {
+  it('fails with supported-runtime guidance when the sync server is unreachable for read commands', async () => {
     const cwd = createTempDir()
     await seedTaskStore(cwd)
     const unusedPort = await reserveUnusedPort()
@@ -171,11 +198,14 @@ describe('mc CLI sync-server fallback hardening', () => {
       MC_SYNC_SERVER: `http://127.0.0.1:${unusedPort}`,
     })
 
-    assert.equal(result.status, 0)
-    assert.match(result.stdout, /Local fallback task/)
+    assert.notEqual(result.status, 0)
+    assert.match(result.stderr, /Could not reach sync server/)
+    assert.match(result.stderr, /npm run sync/)
+    assert.match(result.stderr, /MC_API_TOKEN/)
+    assert.doesNotMatch(result.stdout, /Local fallback task/)
   })
 
-  it('falls back to the local store when the sync server is unreachable for comment writes', async () => {
+  it('fails with supported-runtime guidance when the sync server is unreachable for comment writes', async () => {
     const cwd = createTempDir()
     await seedTaskStore(cwd)
     const unusedPort = await reserveUnusedPort()
@@ -185,14 +215,95 @@ describe('mc CLI sync-server fallback hardening', () => {
       MC_AGENT: 'gary',
     })
 
-    assert.equal(result.status, 0)
-    assert.match(result.stdout, /\(via store\)/)
+    assert.notEqual(result.status, 0)
+    assert.match(result.stderr, /Could not reach sync server/)
+    assert.match(result.stderr, /npm run sync/)
+    assert.match(result.stderr, /MC_API_TOKEN/)
 
     const doc = await readStore(cwd)
     const comments = Object.values(doc.comments || {})
-    assert.equal(comments.length, 1)
-    assert.equal(comments[0].content, 'offline comment')
-    assert.equal(comments[0].taskId, 'local-task-1')
-    assert.ok(!('task_id' in comments[0]))
+    assert.equal(comments.length, 0)
+  })
+
+  it('does not create a git commit when the sync server is unreachable for task-linked commits', async () => {
+    const cwd = createGitRepoWithStagedChange()
+    const unusedPort = await reserveUnusedPort()
+
+    const before = gitCommitCount(cwd)
+    const result = await runCli(cwd, ['commit', '--task', 'task-123', '-m', 'blocked task link'], {
+      MC_SYNC_SERVER: `http://127.0.0.1:${unusedPort}`,
+      MC_AGENT: 'gary',
+    })
+
+    assert.notEqual(result.status, 0)
+    assert.match(result.stderr, /Could not reach sync server/)
+    assert.equal(gitCommitCount(cwd), before)
+  })
+
+  it('does not create a git commit when the requested task is missing on the sync server', async () => {
+    const cwd = createGitRepoWithStagedChange()
+    const baseUrl = await startJsonServer((req, res) => {
+      if (req.method === 'GET' && req.url === '/automerge/doc') {
+        res.statusCode = 200
+        res.setHeader('Content-Type', 'application/json')
+        res.end(JSON.stringify({ success: true, doc: { tasks: {} } }))
+        return
+      }
+
+      res.statusCode = 404
+      res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({ error: 'Not found' }))
+    })
+
+    const before = gitCommitCount(cwd)
+    const result = await runCli(cwd, ['commit', '--task', 'task-404', '-m', 'missing task'], {
+      MC_SYNC_SERVER: baseUrl,
+      MC_AGENT: 'gary',
+    })
+
+    assert.notEqual(result.status, 0)
+    assert.match(result.stderr, /Task task-404 not found on sync server/)
+    assert.equal(gitCommitCount(cwd), before)
+  })
+
+  it('returns a non-zero exit when post-commit task linking fails', async () => {
+    const cwd = createGitRepoWithStagedChange()
+    const baseUrl = await startJsonServer((req, res) => {
+      if (req.method === 'GET' && req.url === '/automerge/doc') {
+        res.statusCode = 200
+        res.setHeader('Content-Type', 'application/json')
+        res.end(JSON.stringify({
+          success: true,
+          doc: {
+            tasks: {
+              'task-123': { id: 'task-123', title: 'Server task' },
+            },
+          },
+        }))
+        return
+      }
+
+      if (req.method === 'POST' && req.url === '/automerge/task/task-123/commit') {
+        res.statusCode = 500
+        res.setHeader('Content-Type', 'application/json')
+        res.end(JSON.stringify({ error: 'Link write failed' }))
+        return
+      }
+
+      res.statusCode = 404
+      res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({ error: 'Not found' }))
+    })
+
+    const before = gitCommitCount(cwd)
+    const result = await runCli(cwd, ['commit', '--task', 'task-123', '-m', 'commit link fails'], {
+      MC_SYNC_SERVER: baseUrl,
+      MC_AGENT: 'gary',
+    })
+
+    assert.notEqual(result.status, 0)
+    assert.match(result.stderr, /Mission Control was not updated/)
+    assert.match(result.stderr, /Link write failed/)
+    assert.equal(gitCommitCount(cwd), before + 1)
   })
 })
