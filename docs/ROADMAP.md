@@ -21,8 +21,8 @@
 - [x] Branch/merge for task experimentation
 - [x] Diff visualization
 
-### Phase 4: UI Prototype
-- [x] React dashboard (`ui-prototype/`)
+### Phase 4: UI Development Client
+- [x] React dashboard dev client (`ui-prototype/`)
 - [x] Task board with sync
 - [x] Activity feed view
 
@@ -30,16 +30,17 @@
 
 ## Current State (2026-02-08)
 
-**Architecture:** Single-agent (Gary) using Mission Control for task tracking.
+**Architecture:** Single supported runtime path with the sync server as state authority for CLI, daemon, and UI clients.
+**Operating Model:** Single-agent (Gary) using Mission Control for task tracking.
 **Storage:** 65 tasks in Automerge store
-**Status:** Functional, beans deprecated
+**Status:** Functional, beans deprecated, UI shipped as a supported development client
 
 ---
 
 ## Future Work (Unprioritized)
 
 ### Polish & Stability
-- [ ] Deploy UI to production (currently prototype only)
+- [ ] Productionize UI deployment (current repo ships a development client)
 - [ ] Add `--json` output to CLI for scripting
 - [ ] Timestamp tracking for stale task detection
 - [ ] Backup/export functionality

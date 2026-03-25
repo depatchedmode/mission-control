@@ -335,3 +335,51 @@ it('allows legacy websocket query tokens only when the compatibility flag is ena
     await once(enabledSocket, 'close')
   })
 })
+
+it('records task-linked commits through the HTTP API', async () => {
+  await withStartedServer({}, async server => {
+    await server.store.docHandle.change(doc => {
+      if (!doc.tasks) doc.tasks = {}
+      doc.tasks['task-123'] = {
+        id: 'task-123',
+        title: 'Track commit through server API',
+        status: 'todo',
+        priority: 'p2',
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      }
+    })
+
+    const response = await fetch(httpUrl(server, '/automerge/task/task-123/commit'), {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer secret-token',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        agent: 'codex',
+        commit: {
+          hash: '1234567890abcdef',
+          message: 'Link commit through supported runtime',
+          diff: { shortstat: '1 file changed' },
+        },
+      }),
+    })
+
+    assert.equal(response.status, 200)
+    assert.equal((await response.json()).success, true)
+
+    const doc = server.store.getDoc()
+    const history = doc.taskHistory?.['task-123'] || []
+    const commitEntry = history.find(entry => entry.type === 'commit')
+    assert.ok(commitEntry)
+    assert.equal(commitEntry.agent, 'codex')
+    assert.equal(commitEntry.commit.hash, '1234567890abcdef')
+
+    const commitActivity = (doc.activity || []).find(
+      entry => entry.type === 'commit_linked' && entry.taskId === 'task-123'
+    )
+    assert.ok(commitActivity)
+    assert.equal(commitActivity.agent, 'codex')
+  })
+})

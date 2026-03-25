@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
 /**
- * Test Integration: MC CLI with Automerge Backend
- * Shows how current CLI commands could work with new store
+ * Internal archived script.
+ * Kept for migration/demo reference only; not part of the supported runtime flow.
  */
 
 import { AutomergeStore } from '../../lib/automerge-store.js'

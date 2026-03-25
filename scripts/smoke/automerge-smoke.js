@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 
 /**
- * Test script for Automerge store
- * Verifies core functionality and real-time sync capabilities
+ * Internal archived script.
+ * Kept for migration/demo reference only; not part of the supported runtime flow.
  */
 
 import { AutomergeStore } from '../../lib/automerge-store.js'
