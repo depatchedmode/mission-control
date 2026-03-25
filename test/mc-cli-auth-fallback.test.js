@@ -4,7 +4,7 @@ import { afterEach, describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { execSync, spawn } from 'node:child_process'
 import { createServer } from 'node:http'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -101,6 +101,24 @@ function gitCommitCount(cwd) {
     encoding: 'utf-8',
     stdio: 'pipe',
   }).trim())
+}
+
+function gitHeadCommit(cwd) {
+  return execSync('git rev-parse HEAD', {
+    cwd,
+    encoding: 'utf-8',
+    stdio: 'pipe',
+  }).trim()
+}
+
+function readOnlyTraceFile(cwd) {
+  const traceDir = join(cwd, '.agent-trace')
+  assert.equal(existsSync(traceDir), true, 'expected trace directory to exist')
+
+  const traceFiles = readdirSync(traceDir).filter(file => file.endsWith('.json'))
+  assert.equal(traceFiles.length, 1, 'expected exactly one trace file')
+
+  return JSON.parse(readFileSync(join(traceDir, traceFiles[0]), 'utf-8'))
 }
 
 function runCli(cwd, args, env = {}) {
@@ -266,7 +284,71 @@ describe('mc CLI supported runtime enforcement', () => {
     assert.equal(gitCommitCount(cwd), before)
   })
 
-  it('returns a non-zero exit when post-commit task linking fails', async () => {
+  it('creates a trace file and task-link request when a task-linked commit succeeds', async () => {
+    const cwd = createGitRepoWithStagedChange()
+    const commitRequests = []
+    const baseUrl = await startJsonServer(async (req, res) => {
+      if (req.method === 'GET' && req.url === '/automerge/doc') {
+        res.statusCode = 200
+        res.setHeader('Content-Type', 'application/json')
+        res.end(JSON.stringify({
+          success: true,
+          doc: {
+            tasks: {
+              'task-123': { id: 'task-123', title: 'Server task' },
+            },
+          },
+        }))
+        return
+      }
+
+      if (req.method === 'POST' && req.url === '/automerge/task/task-123/commit') {
+        let body = ''
+        for await (const chunk of req) {
+          body += chunk.toString()
+        }
+
+        commitRequests.push(JSON.parse(body))
+
+        res.statusCode = 200
+        res.setHeader('Content-Type', 'application/json')
+        res.end(JSON.stringify({ success: true, taskId: 'task-123', commitHash: 'ok' }))
+        return
+      }
+
+      res.statusCode = 404
+      res.setHeader('Content-Type', 'application/json')
+      res.end(JSON.stringify({ error: 'Not found' }))
+    })
+
+    const before = gitCommitCount(cwd)
+    const result = await runCli(cwd, ['commit', '--task', 'task-123', '-m', 'happy path commit'], {
+      MC_SYNC_SERVER: baseUrl,
+      MC_AGENT: 'gary',
+      OPENCLAW_MODEL: 'gpt-5.4',
+      OPENCLAW_SESSION_KEY: 'session-123',
+    })
+
+    assert.equal(result.status, 0)
+    assert.match(result.stdout, /Trace recorded/)
+    assert.match(result.stdout, /Linked to Patchwork timeline/)
+    assert.equal(gitCommitCount(cwd), before + 1)
+    assert.equal(commitRequests.length, 1)
+
+    const headCommit = gitHeadCommit(cwd)
+    assert.equal(commitRequests[0].agent, 'gary')
+    assert.equal(commitRequests[0].commit.hash, headCommit)
+    assert.equal(commitRequests[0].commit.message, 'happy path commit')
+
+    const trace = readOnlyTraceFile(cwd)
+    assert.equal(trace.commit.hash, headCommit)
+    assert.equal(trace.agent.name, 'gary')
+    assert.equal(trace.agent.model, 'gpt-5.4')
+    assert.equal(trace.agent.sessionKey, 'session-123')
+    assert.equal(trace.task, 'task-123')
+  })
+
+  it('keeps a zero exit when post-commit task linking fails after the git commit succeeds', async () => {
     const cwd = createGitRepoWithStagedChange()
     const baseUrl = await startJsonServer((req, res) => {
       if (req.method === 'GET' && req.url === '/automerge/doc') {
@@ -301,7 +383,7 @@ describe('mc CLI supported runtime enforcement', () => {
       MC_AGENT: 'gary',
     })
 
-    assert.notEqual(result.status, 0)
+    assert.equal(result.status, 0)
     assert.match(result.stderr, /Mission Control was not updated/)
     assert.match(result.stderr, /Link write failed/)
     assert.equal(gitCommitCount(cwd), before + 1)

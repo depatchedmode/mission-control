@@ -852,11 +852,10 @@ async function main() {
           });
           console.log(`   📎 Linked to Patchwork timeline`);
         } catch (err) {
-          console.error(`❌ Commit created, but Mission Control was not updated: ${err.message}`);
+          console.error(`⚠️  Commit created, but Mission Control was not updated: ${err.message}`);
           if (isTransportFailure(err)) {
             printSyncRuntimeHint();
           }
-          process.exit(1);
         }
       }
     }
