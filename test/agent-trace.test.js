@@ -5,11 +5,12 @@
 
 import { describe, it, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert';
-import { mkdirSync, rmSync, writeFileSync, readFileSync, existsSync } from 'fs';
+import { mkdirSync, rmSync, writeFileSync, readFileSync, existsSync, realpathSync } from 'fs';
 import { join } from 'path';
 import { execSync } from 'child_process';
 import { fileURLToPath } from 'url';
 import { dirname } from 'path';
+import { cleanupTempDir, createTempDir } from '../support/resources.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -21,11 +22,8 @@ import * as agentTrace from '../lib/agent-trace.js';
 // Test Helpers
 // =============================================================================
 
-const TEST_DIR = join(__dirname, '.test-repos');
-let testRepoPath = null;
-
-function createTestRepo(name) {
-  const repoPath = join(TEST_DIR, name);
+function createTestRepo(baseDir, name) {
+  const repoPath = join(baseDir, name);
   mkdirSync(repoPath, { recursive: true });
   
   execSync('git init', { cwd: repoPath, stdio: 'pipe' });
@@ -40,28 +38,26 @@ function createTestRepo(name) {
   return repoPath;
 }
 
-function cleanup() {
-  if (existsSync(TEST_DIR)) {
-    rmSync(TEST_DIR, { recursive: true, force: true });
-  }
-}
-
 // =============================================================================
 // Tests: findGitRoot
 // =============================================================================
 
 describe('findGitRoot', () => {
+  let tempDir;
+  let testRepoPath;
+  let canonicalRepoPath;
+
   before(() => {
-    cleanup();
-    mkdirSync(TEST_DIR, { recursive: true });
-    testRepoPath = createTestRepo('find-root-test');
+    tempDir = createTempDir('mc-agent-trace-find-root-');
+    testRepoPath = createTestRepo(tempDir, 'find-root-test');
+    canonicalRepoPath = realpathSync(testRepoPath);
   });
   
-  after(() => cleanup());
+  after(() => cleanupTempDir(tempDir));
   
   it('finds git root from repo directory', () => {
     const root = agentTrace.findGitRoot(testRepoPath);
-    assert.strictEqual(root, testRepoPath);
+    assert.strictEqual(root, canonicalRepoPath);
   });
   
   it('finds git root from subdirectory', () => {
@@ -69,7 +65,7 @@ describe('findGitRoot', () => {
     mkdirSync(subdir, { recursive: true });
     
     const root = agentTrace.findGitRoot(subdir);
-    assert.strictEqual(root, testRepoPath);
+    assert.strictEqual(root, canonicalRepoPath);
   });
   
   it('returns null for non-git directory', () => {
@@ -91,13 +87,15 @@ describe('findGitRoot', () => {
 // =============================================================================
 
 describe('getDiffStats', () => {
+  let tempDir;
+  let testRepoPath;
+
   before(() => {
-    cleanup();
-    mkdirSync(TEST_DIR, { recursive: true });
-    testRepoPath = createTestRepo('diff-stats-test');
+    tempDir = createTempDir('mc-agent-trace-diff-stats-');
+    testRepoPath = createTestRepo(tempDir, 'diff-stats-test');
   });
   
-  after(() => cleanup());
+  after(() => cleanupTempDir(tempDir));
   
   it('returns empty stats when nothing staged', () => {
     const stats = agentTrace.getDiffStats(testRepoPath);
@@ -127,13 +125,15 @@ describe('getDiffStats', () => {
 // =============================================================================
 
 describe('getLatestCommit', () => {
+  let tempDir;
+  let testRepoPath;
+
   before(() => {
-    cleanup();
-    mkdirSync(TEST_DIR, { recursive: true });
-    testRepoPath = createTestRepo('latest-commit-test');
+    tempDir = createTempDir('mc-agent-trace-latest-commit-');
+    testRepoPath = createTestRepo(tempDir, 'latest-commit-test');
   });
   
-  after(() => cleanup());
+  after(() => cleanupTempDir(tempDir));
   
   it('returns commit info', () => {
     const commit = agentTrace.getLatestCommit(testRepoPath);
@@ -151,13 +151,15 @@ describe('getLatestCommit', () => {
 // =============================================================================
 
 describe('ensureTraceDir', () => {
+  let tempDir;
+  let testRepoPath;
+
   beforeEach(() => {
-    cleanup();
-    mkdirSync(TEST_DIR, { recursive: true });
-    testRepoPath = createTestRepo('trace-dir-test');
+    tempDir = createTempDir('mc-agent-trace-trace-dir-');
+    testRepoPath = createTestRepo(tempDir, 'trace-dir-test');
   });
   
-  afterEach(() => cleanup());
+  afterEach(() => cleanupTempDir(tempDir));
   
   it('creates .agent-trace directory', () => {
     const traceDir = agentTrace.ensureTraceDir(testRepoPath);
@@ -205,13 +207,15 @@ describe('ensureTraceDir', () => {
 // =============================================================================
 
 describe('createTrace', () => {
+  let tempDir;
+  let testRepoPath;
+
   beforeEach(() => {
-    cleanup();
-    mkdirSync(TEST_DIR, { recursive: true });
-    testRepoPath = createTestRepo('create-trace-test');
+    tempDir = createTempDir('mc-agent-trace-create-trace-');
+    testRepoPath = createTestRepo(tempDir, 'create-trace-test');
   });
   
-  afterEach(() => cleanup());
+  afterEach(() => cleanupTempDir(tempDir));
   
   it('creates a trace file', () => {
     const { filepath, trace } = agentTrace.createTrace({
@@ -267,13 +271,15 @@ describe('createTrace', () => {
 // =============================================================================
 
 describe('listTraces', () => {
+  let tempDir;
+  let testRepoPath;
+
   beforeEach(() => {
-    cleanup();
-    mkdirSync(TEST_DIR, { recursive: true });
-    testRepoPath = createTestRepo('list-traces-test');
+    tempDir = createTempDir('mc-agent-trace-list-traces-');
+    testRepoPath = createTestRepo(tempDir, 'list-traces-test');
   });
   
-  afterEach(() => cleanup());
+  afterEach(() => cleanupTempDir(tempDir));
   
   it('returns empty array when no traces', () => {
     const traces = agentTrace.listTraces(testRepoPath);
@@ -327,13 +333,15 @@ describe('listTraces', () => {
 // =============================================================================
 
 describe('getTraceByCommit', () => {
+  let tempDir;
+  let testRepoPath;
+
   beforeEach(() => {
-    cleanup();
-    mkdirSync(TEST_DIR, { recursive: true });
-    testRepoPath = createTestRepo('get-trace-test');
+    tempDir = createTempDir('mc-agent-trace-get-trace-');
+    testRepoPath = createTestRepo(tempDir, 'get-trace-test');
   });
   
-  afterEach(() => cleanup());
+  afterEach(() => cleanupTempDir(tempDir));
   
   it('finds trace by full hash', () => {
     agentTrace.createTrace({
