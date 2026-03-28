@@ -66,10 +66,12 @@ function getBearerToken(authorizationHeader = '') {
 class AutomergeSyncServer {
   constructor(options = {}) {
     const env = options.env ?? process.env
+    this.logger = options.logger ?? console
     const storeOptions = {}
     if (options.storagePath !== undefined) storeOptions.storagePath = options.storagePath
     if (options.urlFile !== undefined) storeOptions.urlFile = options.urlFile
     if (options.usePersistedUrl !== undefined) storeOptions.usePersistedUrl = options.usePersistedUrl
+    if (options.logger !== undefined) storeOptions.logger = this.logger
 
     this.store = options.store || new AutomergeStore(storeOptions)
     this.connectedClients = new Set()
@@ -86,7 +88,6 @@ class AutomergeSyncServer {
     this.wsTicketTtlMs = Number(
       options.wsTicketTtlMs ?? env.MC_WS_TICKET_TTL_MS ?? 60000
     )
-    this.logger = options.logger ?? console
     this.wsTickets = new Map()
     this.securityCounters = {
       httpUnauthorized: 0,
@@ -115,11 +116,11 @@ class AutomergeSyncServer {
   }
   
   async start() {
-    console.log('🚀 Starting Automerge Sync Server...')
+    this.logger.log?.('🚀 Starting Automerge Sync Server...')
     
     // Initialize backend store
     await this.store.init()
-    console.log('✅ Backend AutomergeStore initialized')
+    this.logger.log?.('✅ Backend AutomergeStore initialized')
     
     // Setup Express for HTTP API
     this.setupHTTPAPI()
@@ -140,10 +141,12 @@ class AutomergeSyncServer {
     })
     this.wsPort = this.getBoundPort(this.wsHttpServer, this.wsPort)
 
-    console.log(`📡 HTTP API listening on ${this.host}:${this.httpPort}`)
-    console.log(`🌐 WebSocket sync on ${this.host}:${this.wsPort}`)
-    console.log(`🔐 Auth mode: ${this.apiToken ? 'token required' : 'disabled (unsafe local mode)'}`)
-    console.log(`🌍 Allowed CORS origins: ${this.allowedOrigins.size === 0 ? '(none)' : [...this.allowedOrigins].join(', ')}`)
+    this.logger.log?.(`📡 HTTP API listening on ${this.host}:${this.httpPort}`)
+    this.logger.log?.(`🌐 WebSocket sync on ${this.host}:${this.wsPort}`)
+    this.logger.log?.(`🔐 Auth mode: ${this.apiToken ? 'token required' : 'disabled (unsafe local mode)'}`)
+    this.logger.log?.(
+      `🌍 Allowed CORS origins: ${this.allowedOrigins.size === 0 ? '(none)' : [...this.allowedOrigins].join(', ')}`
+    )
     
     // Register default agents if not exists
     await this.initializeDefaultAgents()
@@ -674,7 +677,7 @@ class AutomergeSyncServer {
       }
     })
 
-    console.log('🌐 HTTP API routes configured')
+    this.logger.log?.('🌐 HTTP API routes configured')
   }
   
   setupWebSocketServer() {
@@ -728,7 +731,7 @@ class AutomergeSyncServer {
     })
     
     this.wss.on('connection', (ws, req) => {
-      console.log('🔌 Frontend client connected')
+      this.logger.log?.('🔌 Frontend client connected')
       this.connectedClients.add(ws)
       
       // Send current document state immediately
@@ -743,7 +746,7 @@ class AutomergeSyncServer {
           const data = JSON.parse(message.toString())
           await this.handleClientMessage(ws, data)
         } catch (error) {
-          console.error('❌ WebSocket message error:', error)
+          this.logger.error?.('❌ WebSocket message error:', error)
           ws.send(JSON.stringify({
             type: 'error',
             error: error.message
@@ -752,12 +755,12 @@ class AutomergeSyncServer {
       })
       
       ws.on('close', () => {
-        console.log('🔌 Frontend client disconnected')
+        this.logger.log?.('🔌 Frontend client disconnected')
         this.connectedClients.delete(ws)
       })
     })
     
-    console.log('🔄 WebSocket server configured')
+    this.logger.log?.('🔄 WebSocket server configured')
   }
 
   rejectWebSocketUpgrade(socket, statusCode, statusText, payload) {
@@ -776,7 +779,7 @@ class AutomergeSyncServer {
   async handleClientMessage(ws, data) {
     switch (data.type) {
       case 'document-change':
-        console.log('🔄 Applying frontend change:', data.change?.type)
+        this.logger.log?.('🔄 Applying frontend change:', data.change?.type)
         
         if (!data.change) break
         
@@ -822,7 +825,7 @@ class AutomergeSyncServer {
               timestamp: new Date().toISOString()
             })
           })
-          console.log('✅ Task created:', data.change.task.id)
+          this.logger.log?.('✅ Task created:', data.change.task.id)
           this.broadcastDocumentUpdate(ws)
         }
         
@@ -830,7 +833,7 @@ class AutomergeSyncServer {
         if (data.change.type === 'comment-add') {
           const { taskId, comment } = data.change
           await this.store.addComment(taskId, comment.text, comment.agent)
-          console.log('✅ Comment added to task:', taskId)
+          this.logger.log?.('✅ Comment added to task:', taskId)
           // Don't exclude sender - UI doesn't do optimistic updates for comments
           this.broadcastDocumentUpdate(null)
         }
@@ -841,7 +844,7 @@ class AutomergeSyncServer {
         break
         
       default:
-        console.log('⚠️ Unknown message type:', data.type)
+        this.logger.log?.('⚠️ Unknown message type:', data.type)
     }
   }
   
@@ -865,7 +868,7 @@ class AutomergeSyncServer {
       // Check if agents already exist
       const existingAgents = await this.store.getAgents()
       if (existingAgents.length > 0) {
-        console.log(`✅ ${existingAgents.length} agents already registered`)
+        this.logger.log?.(`✅ ${existingAgents.length} agents already registered`)
         return
       }
       
@@ -874,16 +877,22 @@ class AutomergeSyncServer {
       await this.store.registerAgent('friday', 'agent:developer:main', 'Developer')
       await this.store.registerAgent('writer', 'agent:writer:main', 'Content Writer')
       
-      console.log('✅ Default agents registered')
+      this.logger.log?.('✅ Default agents registered')
     } catch (error) {
-      console.error('❌ Failed to initialize agents:', error)
+      this.logger.error?.('❌ Failed to initialize agents:', error)
     }
   }
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
   const server = new AutomergeSyncServer()
-  server.start().catch(console.error)
+  server.start().catch(error => {
+    if (server.logger?.error) {
+      server.logger.error(error)
+      return
+    }
+    console.error(error)
+  })
 }
 
 export default AutomergeSyncServer
