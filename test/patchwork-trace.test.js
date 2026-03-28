@@ -6,6 +6,7 @@
 import { describe, it, before, after, beforeEach, afterEach } from 'node:test';
 import assert from 'node:assert';
 import { AutomergeStore } from '../lib/automerge-store.js';
+import { cleanupTempDir, createTempDir, noopLogger } from '../support/resources.js'
 
 // =============================================================================
 // Tests: recordCommit
@@ -13,10 +14,13 @@ import { AutomergeStore } from '../lib/automerge-store.js';
 
 describe('AutomergeStore.recordCommit', () => {
   let store;
+  let storagePath;
   
   before(async () => {
+    storagePath = createTempDir('mc-patchwork-test-')
     store = new AutomergeStore({ 
-      storagePath: '/tmp/mc-patchwork-test-' + Date.now()
+      storagePath,
+      logger: noopLogger,
     });
     await store.init();
     
@@ -33,7 +37,11 @@ describe('AutomergeStore.recordCommit', () => {
   });
   
   after(async () => {
-    if (store) await store.close();
+    try {
+      if (store) await store.close();
+    } finally {
+      cleanupTempDir(storagePath);
+    }
   });
   
   it('records commit in task history', async () => {
@@ -123,10 +131,13 @@ describe('AutomergeStore.recordCommit', () => {
 
 describe('Activity feed message handling', () => {
   let store;
+  let storagePath;
   
   before(async () => {
+    storagePath = createTempDir('mc-patchwork-msg-test-')
     store = new AutomergeStore({ 
-      storagePath: '/tmp/mc-patchwork-msg-test-' + Date.now()
+      storagePath,
+      logger: noopLogger,
     });
     await store.init();
     
@@ -142,7 +153,11 @@ describe('Activity feed message handling', () => {
   });
   
   after(async () => {
-    if (store) await store.close();
+    try {
+      if (store) await store.close();
+    } finally {
+      cleanupTempDir(storagePath);
+    }
   });
   
   it('truncates long commit messages in activity', async () => {

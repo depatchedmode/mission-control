@@ -3,6 +3,7 @@ import { describe, it, before, after } from 'node:test'
 import assert from 'node:assert'
 import { activityTaskId } from '../lib/activity-task-id.js'
 import { AutomergeStore } from '../lib/automerge-store.js'
+import { cleanupTempDir, createTempDir, noopLogger } from '../support/resources.js'
 
 describe('activityTaskId', () => {
   it('prefers taskId when both are present', () => {
@@ -22,11 +23,14 @@ describe('activityTaskId', () => {
 
 describe('AutomergeStore activity task field', () => {
   let store
+  let storagePath
 
   before(async () => {
+    storagePath = createTempDir('mc-activity-taskid-test-')
     store = new AutomergeStore({
-      storagePath: '/tmp/mc-activity-taskid-test-' + Date.now(),
-      usePersistedUrl: false
+      storagePath,
+      usePersistedUrl: false,
+      logger: noopLogger,
     })
     await store.init()
     await store.docHandle.change(doc => {
@@ -41,7 +45,11 @@ describe('AutomergeStore activity task field', () => {
   })
 
   after(async () => {
-    if (store) await store.close()
+    try {
+      if (store) await store.close()
+    } finally {
+      cleanupTempDir(storagePath)
+    }
   })
 
   it('writes comment_added activity with taskId only', async () => {
@@ -81,11 +89,14 @@ describe('AutomergeStore activity task field', () => {
 
 describe('AutomergeStore activity writers (branch / merge / update)', () => {
   let store
+  let storagePath
 
   before(async () => {
+    storagePath = createTempDir('mc-activity-writers-test-')
     store = new AutomergeStore({
-      storagePath: '/tmp/mc-activity-writers-test-' + Date.now(),
-      usePersistedUrl: false
+      storagePath,
+      usePersistedUrl: false,
+      logger: noopLogger,
     })
     await store.init()
     await store.docHandle.change(doc => {
@@ -106,7 +117,11 @@ describe('AutomergeStore activity writers (branch / merge / update)', () => {
   })
 
   after(async () => {
-    if (store) await store.close()
+    try {
+      if (store) await store.close()
+    } finally {
+      cleanupTempDir(storagePath)
+    }
   })
 
   it('createBranch logs task_branched with taskId only', async () => {

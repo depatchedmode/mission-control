@@ -4,6 +4,7 @@ import assert from 'node:assert/strict'
 
 import { AutomergeStore } from '../lib/automerge-store.js'
 import { taskRecordTaskId } from '../lib/task-record-task-id.js'
+import { cleanupTempDir, createTempDir, noopLogger } from '../support/resources.js'
 
 describe('taskRecordTaskId', () => {
   it('prefers taskId when both are present', () => {
@@ -23,11 +24,14 @@ describe('taskRecordTaskId', () => {
 
 describe('AutomergeStore comment and mention task field normalization', () => {
   let store
+  let storagePath
 
   before(async () => {
+    storagePath = createTempDir('mc-task-record-taskid-test-')
     store = new AutomergeStore({
-      storagePath: `/tmp/mc-task-record-taskid-test-${Date.now()}`,
-      usePersistedUrl: false
+      storagePath,
+      usePersistedUrl: false,
+      logger: noopLogger,
     })
     await store.init()
     await store.docHandle.change(doc => {
@@ -43,7 +47,11 @@ describe('AutomergeStore comment and mention task field normalization', () => {
   })
 
   after(async () => {
-    if (store) await store.close()
+    try {
+      if (store) await store.close()
+    } finally {
+      cleanupTempDir(storagePath)
+    }
   })
 
   it('writes new comment and mention records with taskId only', async () => {

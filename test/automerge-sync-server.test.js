@@ -3,17 +3,12 @@
 import { it } from 'node:test'
 import assert from 'node:assert/strict'
 import { once } from 'node:events'
-import { mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { request } from 'node:http'
 import { setTimeout as delay } from 'node:timers/promises'
 import { WebSocket } from 'ws'
 
 import AutomergeSyncServer from '../automerge-sync-server.js'
-
-function createTempDir(prefix = 'mc-sync-test-') {
-  return mkdtempSync(join(tmpdir(), prefix))
-}
+import { cleanupTempDir, createTempDir, noopLogger } from '../support/resources.js'
 
 function createServer(storagePath, overrides = {}) {
   return new AutomergeSyncServer({
@@ -24,7 +19,7 @@ function createServer(storagePath, overrides = {}) {
     wsPort: 0,
     storagePath,
     usePersistedUrl: false,
-    logger: { warn() {} },
+    logger: noopLogger,
     ...overrides,
   })
 }
@@ -37,7 +32,11 @@ async function withStartedServer(overrides, fn) {
     await server.start()
     return await fn(server)
   } finally {
-    await server.stop()
+    try {
+      await server.stop()
+    } finally {
+      cleanupTempDir(storagePath)
+    }
   }
 }
 
@@ -47,7 +46,7 @@ function withTempServer(overrides, fn) {
   try {
     return fn(createServer(storagePath, overrides))
   } finally {
-    rmSync(storagePath, { recursive: true, force: true })
+    cleanupTempDir(storagePath)
   }
 }
 
@@ -59,49 +58,49 @@ function wsUrl(server, path = '/') {
   return `ws://${server.host}:${server.wsPort}${path}`
 }
 
-function connectWebSocket(url, options = {}) {
-  return new Promise(resolve => {
-    const ws = new WebSocket(url, options)
-    let settled = false
+function requestWebSocketUpgrade(url, options = {}) {
+  const target = new URL(url)
 
-    const timeout = setTimeout(() => {
-      finish({ type: 'timeout' })
-    }, 2000)
+  return new Promise((resolve, reject) => {
+    const req = request({
+      hostname: target.hostname,
+      port: target.port,
+      path: `${target.pathname}${target.search}`,
+      method: 'GET',
+      headers: {
+        Connection: 'Upgrade',
+        Upgrade: 'websocket',
+        'Sec-WebSocket-Key': Buffer.alloc(16, 7).toString('base64'),
+        'Sec-WebSocket-Version': '13',
+        ...(options.origin ? { Origin: options.origin } : {}),
+        ...(options.headers || {}),
+      },
+    })
 
-    function finish(result) {
-      if (settled) return
-      settled = true
-      clearTimeout(timeout)
-      ws.removeAllListeners()
-
-      if (ws.readyState === WebSocket.OPEN) {
-        try {
-          ws.close()
-        } catch {
-          // Ignore shutdown errors during probe cleanup.
-        }
-      } else if (ws.readyState === WebSocket.CONNECTING) {
-        ws._req?.destroy()
-        ws._socket?.destroy()
-      }
-
-      resolve(result)
-    }
-
-    ws.once('open', () => finish({ type: 'open' }))
-    ws.once('unexpected-response', (_req, res) => {
+    req.once('response', res => {
       const chunks = []
       res.on('data', chunk => chunks.push(Buffer.from(chunk)))
       res.on('end', () => {
-        finish({
-          type: 'unexpected-response',
+        resolve({
           statusCode: res.statusCode,
           body: Buffer.concat(chunks).toString('utf8'),
+          headers: res.headers,
         })
       })
       res.resume()
     })
-    ws.once('error', error => finish({ type: 'error', message: error.message }))
+
+    req.once('upgrade', (res, socket, head) => {
+      socket.destroy()
+      resolve({
+        statusCode: res.statusCode ?? 101,
+        body: head.toString('utf8'),
+        headers: res.headers,
+      })
+    })
+
+    req.once('error', reject)
+    req.end()
   })
 }
 
@@ -251,11 +250,10 @@ it('does not allow legacy query tokens on HTTP requests', async () => {
 
 it('rejects unauthorized websocket upgrades before the socket opens', async () => {
   await withStartedServer({}, async server => {
-    const result = await connectWebSocket(wsUrl(server), {
+    const result = await requestWebSocketUpgrade(wsUrl(server), {
       origin: 'http://allowed.example',
     })
 
-    assert.equal(result.type, 'unexpected-response')
     assert.equal(result.statusCode, 401)
     assert.match(result.body, /Unauthorized/)
   })
@@ -263,12 +261,11 @@ it('rejects unauthorized websocket upgrades before the socket opens', async () =
 
 it('rejects disallowed websocket origins before the socket opens', async () => {
   await withStartedServer({}, async server => {
-    const result = await connectWebSocket(wsUrl(server), {
+    const result = await requestWebSocketUpgrade(wsUrl(server), {
       origin: 'http://denied.example',
       headers: { Authorization: 'Bearer secret-token' },
     })
 
-    assert.equal(result.type, 'unexpected-response')
     assert.equal(result.statusCode, 403)
     assert.match(result.body, /Origin not allowed/)
   })
@@ -292,10 +289,9 @@ it('consumes websocket tickets after a single successful use and rejects expired
     firstConnection.close()
     await once(firstConnection, 'close')
 
-    const reusedConnection = await connectWebSocket(wsUrl(server, `/?ticket=${firstTicket}`), {
+    const reusedConnection = await requestWebSocketUpgrade(wsUrl(server, `/?ticket=${firstTicket}`), {
       origin: 'http://allowed.example',
     })
-    assert.equal(reusedConnection.type, 'unexpected-response')
     assert.equal(reusedConnection.statusCode, 401)
 
     const secondTicketResponse = await fetch(httpUrl(server, '/automerge/ws-ticket'), {
@@ -310,20 +306,21 @@ it('consumes websocket tickets after a single successful use and rejects expired
 
     await delay(40)
 
-    const expiredConnection = await connectWebSocket(wsUrl(server, `/?ticket=${secondTicket}`), {
+    const expiredConnection = await requestWebSocketUpgrade(wsUrl(server, `/?ticket=${secondTicket}`), {
       origin: 'http://allowed.example',
     })
-    assert.equal(expiredConnection.type, 'unexpected-response')
     assert.equal(expiredConnection.statusCode, 401)
   })
 })
 
 it('allows legacy websocket query tokens only when the compatibility flag is enabled', async () => {
   await withStartedServer({ allowLegacyWsQueryToken: false }, async disabledServer => {
-    const disabledResult = await connectWebSocket(wsUrl(disabledServer, '/?token=secret-token'), {
-      origin: 'http://allowed.example',
-    })
-    assert.equal(disabledResult.type, 'unexpected-response')
+    const disabledResult = await requestWebSocketUpgrade(
+      wsUrl(disabledServer, '/?token=secret-token'),
+      {
+        origin: 'http://allowed.example',
+      }
+    )
     assert.equal(disabledResult.statusCode, 401)
   })
 

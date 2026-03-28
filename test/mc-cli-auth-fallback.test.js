@@ -10,6 +10,7 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 import { AutomergeStore } from '../lib/automerge-store.js'
+import { noopLogger } from '../support/resources.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
@@ -28,6 +29,7 @@ function storePaths(cwd) {
     storagePath: join(cwd, '.mission-control'),
     urlFile: join(cwd, '.mission-control-url'),
     usePersistedUrl: true,
+    logger: noopLogger,
   }
 }
 
