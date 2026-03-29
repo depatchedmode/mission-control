@@ -79,7 +79,7 @@ export async function authedPost(server, path, body) {
     method: 'POST',
     body: JSON.stringify(body),
   })
-  return { httpStatus: res.status, ...(await res.json()) }
+  return { ...(await res.json()), status: res.status }
 }
 
 export async function authedPatch(server, path, body) {
@@ -87,12 +87,12 @@ export async function authedPatch(server, path, body) {
     method: 'PATCH',
     body: JSON.stringify(body),
   })
-  return { httpStatus: res.status, ...(await res.json()) }
+  return { ...(await res.json()), status: res.status }
 }
 
 export async function authedDelete(server, path) {
   const res = await authedFetch(server, path, { method: 'DELETE' })
-  return { httpStatus: res.status, ...(await res.json()) }
+  return { ...(await res.json()), status: res.status }
 }
 
 export async function getDoc(server) {

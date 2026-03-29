@@ -13,7 +13,8 @@
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
 import { once } from 'node:events'
-import { WebSocket } from 'ws'
+import { Repo } from '@automerge/automerge-repo'
+import { WebSocketClientAdapter } from '@automerge/automerge-repo-network-websocket'
 import {
   withStartedServer,
   authedPost,
@@ -22,8 +23,7 @@ import {
   getDoc,
   createTask,
   wsUrl,
-  connectAuthenticatedWs,
-  nextWsMessage,
+  TEST_TOKEN,
 } from '../support/resources.js'
 
 // ─────────────────────────────────────────────────────────────────
@@ -31,49 +31,47 @@ import {
 //
 // The positioning says "CRDT: conflict-free concurrent edits" but
 // all writes are serialized through a single HTTP server. The
-// WebSocket endpoint speaks a JSON protocol (document-state /
-// document-update), NOT the Automerge binary sync protocol. There
-// is no path for a second Automerge peer to sync its changes into
-// the server — every write must go through HTTP or the JSON WS API.
+// WebSocket endpoint speaks a custom JSON protocol (document-state /
+// document-update), NOT the Automerge binary sync protocol (CBOR).
 //
-// This test connects to the real server and verifies that the WS
-// protocol has no support for Automerge sync messages. When a true
-// CRDT sync path is added, this test will start passing.
+// This test connects a real Automerge Repo with its native
+// WebSocketClientAdapter to the running server. The adapter sends
+// CBOR-encoded join/sync messages, but the server expects JSON —
+// so the handshake never completes and no CRDT sync occurs.
+//
+// When Mission Control adds true Automerge sync support, this
+// test will start passing.
 // ─────────────────────────────────────────────────────────────────
 
 describe('GAP: true CRDT sync via WebSocket', () => {
-  it('server should accept Automerge sync messages over WebSocket', async () => {
-    await withStartedServer({}, async server => {
-      const ws = await connectAuthenticatedWs(server)
+  it('Automerge Repo peer can sync with the server via WebSocket', async () => {
+    await withStartedServer({ allowLegacyWsQueryToken: true }, async server => {
+      const url = wsUrl(server, `/?token=${TEST_TOKEN}`)
+
+      // Connect a real Automerge Repo using its native WS adapter.
+      // The adapter sends CBOR-encoded binary messages (join, sync);
+      // the server only understands JSON — so this will fail.
+      // Disable reconnection so the test doesn't hang.
+      const adapter = new WebSocketClientAdapter(url, 0)
+      const peerRepo = new Repo({ network: [adapter] })
+
       try {
-        // Consume initial document-state
-        const initial = await nextWsMessage(ws)
-        assert.equal(initial.type, 'document-state', 'Should get JSON document-state')
+        // Give the adapter time to attempt its handshake.
+        await new Promise(resolve => setTimeout(resolve, 1000))
 
-        // Attempt to send an Automerge-style sync message.
-        // In a true CRDT system, the server would accept binary sync
-        // messages and merge them into its local document. Instead,
-        // the server only understands JSON document-change messages.
-        ws.send(JSON.stringify({
-          type: 'sync',
-          data: 'automerge-sync-message-placeholder',
-        }))
-
-        // If the server supported CRDT sync, it would respond with a
-        // sync-state or sync-complete message. Instead, it either
-        // ignores the message or sends back an error/unrecognized type.
-        //
-        // We test for a 'sync-response' message type, which would
-        // indicate the server speaks the Automerge sync protocol.
-        const response = await nextWsMessage(ws, 1000).catch(() => null)
+        // In a working CRDT sync setup, the peer repo would discover
+        // the server's document and be able to read it. Instead, the
+        // protocol mismatch means no documents are shared.
+        const handles = peerRepo.handles
+        const syncedDocCount = Object.keys(handles).length
 
         assert.ok(
-          response && response.type === 'sync-response',
-          'Server should respond to sync messages with a sync-response — FAILS because the WS endpoint only speaks JSON document-state/document-update, not the Automerge sync protocol'
+          syncedDocCount > 0,
+          'Peer repo should discover server documents via Automerge sync — FAILS because the WS endpoint speaks JSON, not the CBOR-based Automerge sync protocol'
         )
       } finally {
-        ws.close()
-        await once(ws, 'close')
+        adapter.disconnect()
+        await peerRepo.shutdown()
       }
     })
   })
