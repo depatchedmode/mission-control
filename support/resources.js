@@ -23,7 +23,7 @@ export function cleanupTempDir(dir) {
 
 // ─── Sync Server Helpers ───
 
-const TEST_TOKEN = 'test-token'
+export const TEST_TOKEN = 'test-token'
 
 export function createServer(storagePath, overrides = {}) {
   return new AutomergeSyncServer({
@@ -79,7 +79,7 @@ export async function authedPost(server, path, body) {
     method: 'POST',
     body: JSON.stringify(body),
   })
-  return { status: res.status, ...(await res.json()) }
+  return { httpStatus: res.status, ...(await res.json()) }
 }
 
 export async function authedPatch(server, path, body) {
@@ -87,12 +87,12 @@ export async function authedPatch(server, path, body) {
     method: 'PATCH',
     body: JSON.stringify(body),
   })
-  return { status: res.status, ...(await res.json()) }
+  return { httpStatus: res.status, ...(await res.json()) }
 }
 
 export async function authedDelete(server, path) {
   const res = await authedFetch(server, path, { method: 'DELETE' })
-  return { status: res.status, ...(await res.json()) }
+  return { httpStatus: res.status, ...(await res.json()) }
 }
 
 export async function getDoc(server) {
@@ -120,7 +120,6 @@ export async function connectAuthenticatedWs(server) {
 
   // Buffer messages that arrive before callers attach listeners.
   const messageBuffer = []
-  ws._mcBuffering = true
   const bufferHandler = data => {
     messageBuffer.push(JSON.parse(data.toString()))
   }
@@ -128,12 +127,20 @@ export async function connectAuthenticatedWs(server) {
 
   await once(ws, 'open')
 
-  // Give the server's synchronous send a tick to arrive.
-  await new Promise(resolve => setTimeout(resolve, 50))
+  // Wait for the initial document-state message with a real timeout
+  // instead of an arbitrary sleep.
+  if (messageBuffer.length === 0) {
+    await new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => reject(new Error('No initial WS message')), 2000)
+      ws.once('message', () => {
+        clearTimeout(timeout)
+        resolve()
+      })
+    })
+  }
 
   // Stop buffering and stash any early messages.
   ws.removeListener('message', bufferHandler)
-  ws._mcBuffering = false
   ws._mcBuffer = messageBuffer
   return ws
 }

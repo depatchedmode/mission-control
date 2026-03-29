@@ -7,55 +7,23 @@ import { request } from 'node:http'
 import { setTimeout as delay } from 'node:timers/promises'
 import { WebSocket } from 'ws'
 
-import AutomergeSyncServer from '../automerge-sync-server.js'
-import { cleanupTempDir, createTempDir, noopLogger } from '../support/resources.js'
-
-function createServer(storagePath, overrides = {}) {
-  return new AutomergeSyncServer({
-    env: {},
-    apiToken: 'secret-token',
-    allowedOrigins: ['http://allowed.example'],
-    httpPort: 0,
-    wsPort: 0,
-    storagePath,
-    usePersistedUrl: false,
-    logger: noopLogger,
-    ...overrides,
-  })
-}
-
-async function withStartedServer(overrides, fn) {
-  const storagePath = createTempDir()
-  const server = createServer(storagePath, overrides)
-
-  try {
-    await server.start()
-    return await fn(server)
-  } finally {
-    try {
-      await server.stop()
-    } finally {
-      cleanupTempDir(storagePath)
-    }
-  }
-}
+import {
+  createTempDir,
+  cleanupTempDir,
+  createServer,
+  withStartedServer,
+  httpUrl,
+  wsUrl,
+  TEST_TOKEN,
+} from '../support/resources.js'
 
 function withTempServer(overrides, fn) {
-  const storagePath = createTempDir()
-
+  const storagePath = createTempDir('mc-sync-test-')
   try {
     return fn(createServer(storagePath, overrides))
   } finally {
     cleanupTempDir(storagePath)
   }
-}
-
-function httpUrl(server, path) {
-  return `http://${server.host}:${server.httpPort}${path}`
-}
-
-function wsUrl(server, path = '/') {
-  return `ws://${server.host}:${server.wsPort}${path}`
 }
 
 function requestWebSocketUpgrade(url, options = {}) {
@@ -184,7 +152,7 @@ it('allows authorized GET requests and allowlisted preflight requests', async ()
   await withStartedServer({}, async server => {
     const getResponse = await fetch(httpUrl(server, '/automerge/doc'), {
       headers: {
-        Authorization: 'Bearer secret-token',
+        Authorization: `Bearer ${TEST_TOKEN}`,
         Origin: 'http://allowed.example',
       },
     })
@@ -218,7 +186,7 @@ it('rejects disallowed origins for GET and preflight requests', async () => {
   await withStartedServer({}, async server => {
     const getResponse = await fetch(httpUrl(server, '/automerge/doc'), {
       headers: {
-        Authorization: 'Bearer secret-token',
+        Authorization: `Bearer ${TEST_TOKEN}`,
         Origin: 'http://denied.example',
       },
     })
@@ -247,7 +215,7 @@ it('rejects unauthorized HTTP requests and accepts authorized ones', async () =>
     assert.match((await unauthorizedResponse.json()).error, /Unauthorized/)
 
     const authorizedResponse = await fetch(httpUrl(server, '/automerge/doc'), {
-      headers: { Authorization: 'Bearer secret-token' },
+      headers: { Authorization: `Bearer ${TEST_TOKEN}` },
     })
     assert.equal(authorizedResponse.status, 200)
   })
@@ -255,7 +223,7 @@ it('rejects unauthorized HTTP requests and accepts authorized ones', async () =>
 
 it('does not allow legacy query tokens on HTTP requests', async () => {
   await withStartedServer({ allowLegacyWsQueryToken: true }, async server => {
-    const response = await fetch(httpUrl(server, '/automerge/doc?token=secret-token'))
+    const response = await fetch(httpUrl(server, `/automerge/doc?token=${TEST_TOKEN}`))
     assert.equal(response.status, 401)
   })
 })
@@ -275,7 +243,7 @@ it('rejects disallowed websocket origins before the socket opens', async () => {
   await withStartedServer({}, async server => {
     const result = await requestWebSocketUpgrade(wsUrl(server), {
       origin: 'http://denied.example',
-      headers: { Authorization: 'Bearer secret-token' },
+      headers: { Authorization: `Bearer ${TEST_TOKEN}` },
     })
 
     assert.equal(result.statusCode, 403)
@@ -288,7 +256,7 @@ it('consumes websocket tickets after a single successful use and rejects expired
     const ticketResponse = await fetch(httpUrl(server, '/automerge/ws-ticket'), {
       method: 'POST',
       headers: {
-        Authorization: 'Bearer secret-token',
+        Authorization: `Bearer ${TEST_TOKEN}`,
         Origin: 'http://allowed.example',
         'Content-Type': 'application/json',
       },
@@ -309,7 +277,7 @@ it('consumes websocket tickets after a single successful use and rejects expired
     const secondTicketResponse = await fetch(httpUrl(server, '/automerge/ws-ticket'), {
       method: 'POST',
       headers: {
-        Authorization: 'Bearer secret-token',
+        Authorization: `Bearer ${TEST_TOKEN}`,
         Origin: 'http://allowed.example',
         'Content-Type': 'application/json',
       },
@@ -328,7 +296,7 @@ it('consumes websocket tickets after a single successful use and rejects expired
 it('allows legacy websocket query tokens only when the compatibility flag is enabled', async () => {
   await withStartedServer({ allowLegacyWsQueryToken: false }, async disabledServer => {
     const disabledResult = await requestWebSocketUpgrade(
-      wsUrl(disabledServer, '/?token=secret-token'),
+      wsUrl(disabledServer, `/?token=${TEST_TOKEN}`),
       {
         origin: 'http://allowed.example',
       }
@@ -337,7 +305,7 @@ it('allows legacy websocket query tokens only when the compatibility flag is ena
   })
 
   await withStartedServer({ allowLegacyWsQueryToken: true }, async enabledServer => {
-    const enabledSocket = await expectWebSocketOpen(wsUrl(enabledServer, '/?token=secret-token'), {
+    const enabledSocket = await expectWebSocketOpen(wsUrl(enabledServer, `/?token=${TEST_TOKEN}`), {
       origin: 'http://allowed.example',
     })
     enabledSocket.close()
@@ -362,7 +330,7 @@ it('records task-linked commits through the HTTP API', async () => {
     const response = await fetch(httpUrl(server, '/automerge/task/task-123/commit'), {
       method: 'POST',
       headers: {
-        Authorization: 'Bearer secret-token',
+        Authorization: `Bearer ${TEST_TOKEN}`,
         'Content-Type': 'application/json',
       },
       body: JSON.stringify({

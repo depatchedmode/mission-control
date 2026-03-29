@@ -27,7 +27,7 @@ describe('error resilience', () => {
         status: 'in-progress',
         agent: 'gary',
       })
-      assert.equal(result.status, 404)
+      assert.equal(result.httpStatus, 404)
       assert.match(result.error, /not found/i)
     })
   })
@@ -38,7 +38,7 @@ describe('error resilience', () => {
         agent: 'gary',
         commit: { hash: 'abc123', message: 'test' },
       })
-      assert.equal(result.status, 404)
+      assert.equal(result.httpStatus, 404)
     })
   })
 
@@ -48,7 +48,7 @@ describe('error resilience', () => {
         branchName: 'test',
         agent: 'gary',
       })
-      assert.equal(result.status, 404)
+      assert.equal(result.httpStatus, 404)
     })
   })
 
@@ -57,14 +57,14 @@ describe('error resilience', () => {
       const result = await authedPost(server, '/automerge/branch/nonexistent/merge', {
         agent: 'gary',
       })
-      assert.equal(result.status, 400)
+      assert.equal(result.httpStatus, 400)
     })
   })
 
   it('DELETE nonexistent comment returns 404', async () => {
     await withStartedServer({}, async server => {
       const result = await authedDelete(server, '/automerge/comment/nonexistent')
-      assert.equal(result.status, 404)
+      assert.equal(result.httpStatus, 404)
     })
   })
 
@@ -73,7 +73,7 @@ describe('error resilience', () => {
       const result = await authedPatch(server, '/automerge/comment/nonexistent', {
         content: 'updated',
       })
-      assert.equal(result.status, 404)
+      assert.equal(result.httpStatus, 404)
     })
   })
 
@@ -84,7 +84,7 @@ describe('error resilience', () => {
       const result = await authedPost(server, '/automerge/task', {
         agent: 'gary',
       })
-      assert.equal(result.status, 400)
+      assert.equal(result.httpStatus, 400)
       assert.match(result.error, /title/i)
     })
   })
@@ -100,7 +100,7 @@ describe('error resilience', () => {
       const result = await authedPost(server, `/automerge/task/${taskId}/branch`, {
         agent: 'gary',
       })
-      assert.equal(result.status, 400)
+      assert.equal(result.httpStatus, 400)
       assert.match(result.error, /branchName/i)
     })
   })
@@ -108,7 +108,7 @@ describe('error resilience', () => {
   it('POST agent without required fields returns 400', async () => {
     await withStartedServer({}, async server => {
       const result = await authedPost(server, '/automerge/agent', {})
-      assert.equal(result.status, 400)
+      assert.equal(result.httpStatus, 400)
     })
   })
 
@@ -123,14 +123,14 @@ describe('error resilience', () => {
         agent: 'gary',
         commit: { message: 'no hash' },
       })
-      assert.equal(result.status, 400)
+      assert.equal(result.httpStatus, 400)
     })
   })
 
   it('POST last-seen without taskId returns 400', async () => {
     await withStartedServer({}, async server => {
       const result = await authedPost(server, '/automerge/last-seen', {})
-      assert.equal(result.status, 400)
+      assert.equal(result.httpStatus, 400)
       assert.match(result.error, /taskId/i)
     })
   })
@@ -139,6 +139,8 @@ describe('error resilience', () => {
 
   it('all endpoints reject unauthorized requests', async () => {
     await withStartedServer({}, async server => {
+      // Keep in sync with routes in automerge-sync-server.js setupHTTPAPI().
+      // Currently 17 endpoints — if you add a route, add it here too.
       const endpoints = [
         ['GET', '/automerge/doc'],
         ['GET', '/automerge/url'],
@@ -194,7 +196,7 @@ describe('error resilience', () => {
         title: '',
         agent: 'gary',
       })
-      assert.equal(result.status, 400)
+      assert.equal(result.httpStatus, 400)
     })
   })
 

@@ -246,6 +246,8 @@ describe('websocket sync', () => {
         const msg = await nextWsMessage(ws)
         assert.equal(msg.type, 'document-update')
 
+        // Note: API accepts 'text' but stores as 'content' in the document.
+        // See automerge-store.js addComment() — this is an API naming inconsistency.
         const comments = Object.values(msg.doc.comments).filter(c => c.taskId === taskId)
         assert.ok(comments.length >= 1, 'Should have at least one comment')
         assert.equal(comments[0].content, 'Comment via WS')

@@ -12,8 +12,8 @@
 
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { Repo } from '@automerge/automerge-repo'
-import { NodeFSStorageAdapter } from '../lib/nodefs-storage-adapter.js'
+import { once } from 'node:events'
+import { WebSocket } from 'ws'
 import {
   withStartedServer,
   authedPost,
@@ -21,98 +21,61 @@ import {
   authedGet,
   getDoc,
   createTask,
-  createTempDir,
-  cleanupTempDir,
+  wsUrl,
+  connectAuthenticatedWs,
+  nextWsMessage,
 } from '../support/resources.js'
 
 // ─────────────────────────────────────────────────────────────────
 // GAP 1: True CRDT merge is never exercised
 //
 // The positioning says "CRDT: conflict-free concurrent edits" but
-// all writes are serialized through a single HTTP server. Automerge's
-// merge capability is never actually tested. This test creates two
-// independent Automerge repos, makes conflicting changes in each,
-// and merges them — the way real CRDT peers would behave.
+// all writes are serialized through a single HTTP server. The
+// WebSocket endpoint speaks a JSON protocol (document-state /
+// document-update), NOT the Automerge binary sync protocol. There
+// is no path for a second Automerge peer to sync its changes into
+// the server — every write must go through HTTP or the JSON WS API.
+//
+// This test connects to the real server and verifies that the WS
+// protocol has no support for Automerge sync messages. When a true
+// CRDT sync path is added, this test will start passing.
 // ─────────────────────────────────────────────────────────────────
 
-describe('GAP: true CRDT merge between divergent peers', () => {
-  it('two repos that diverge on different fields merge cleanly', async () => {
-    const storageA = createTempDir('crdt-a-')
-    const storageB = createTempDir('crdt-b-')
+describe('GAP: true CRDT sync via WebSocket', () => {
+  it('server should accept Automerge sync messages over WebSocket', async () => {
+    await withStartedServer({}, async server => {
+      const ws = await connectAuthenticatedWs(server)
+      try {
+        // Consume initial document-state
+        const initial = await nextWsMessage(ws)
+        assert.equal(initial.type, 'document-state', 'Should get JSON document-state')
 
-    try {
-      // Create repo A with a task
-      const repoA = new Repo({
-        storage: new NodeFSStorageAdapter(storageA),
-        sharePolicy: async () => false,
-      })
-      const handleA = repoA.create()
-      handleA.change(doc => {
-        doc.tasks = {}
-        doc.tasks['task-1'] = {
-          id: 'task-1',
-          title: 'Shared task',
-          status: 'todo',
-          assignee: null,
-          priority: 'p2',
-        }
-      })
+        // Attempt to send an Automerge-style sync message.
+        // In a true CRDT system, the server would accept binary sync
+        // messages and merge them into its local document. Instead,
+        // the server only understands JSON document-change messages.
+        ws.send(JSON.stringify({
+          type: 'sync',
+          data: 'automerge-sync-message-placeholder',
+        }))
 
-      // Get the raw Automerge document bytes and load into repo B
-      const repoB = new Repo({
-        storage: new NodeFSStorageAdapter(storageB),
-        sharePolicy: async () => false,
-      })
+        // If the server supported CRDT sync, it would respond with a
+        // sync-state or sync-complete message. Instead, it either
+        // ignores the message or sends back an error/unrecognized type.
+        //
+        // We test for a 'sync-response' message type, which would
+        // indicate the server speaks the Automerge sync protocol.
+        const response = await nextWsMessage(ws, 1000).catch(() => null)
 
-      // Clone A's document into B by saving and loading binary
-      const docA = handleA.doc()
-      const handleB = repoB.create()
-      handleB.change(doc => {
-        doc.tasks = {}
-        doc.tasks['task-1'] = {
-          id: 'task-1',
-          title: 'Shared task',
-          status: 'todo',
-          assignee: null,
-          priority: 'p2',
-        }
-      })
-
-      // Now make DIVERGENT changes — this simulates two agents working offline
-      handleA.change(doc => {
-        doc.tasks['task-1'].status = 'in-progress'
-      })
-
-      handleB.change(doc => {
-        doc.tasks['task-1'].assignee = 'friday'
-      })
-
-      // In a real CRDT system, merging these should preserve BOTH changes.
-      // Mission Control never does this — it serializes through HTTP.
-      // This test asserts that the project's Automerge usage actually
-      // supports the merge it claims to offer.
-      //
-      // To make this pass, Mission Control would need to sync changes
-      // between repos (e.g., via Automerge's sync protocol) rather than
-      // only accepting HTTP writes to a single authority.
-
-      const mergedA = handleA.doc()
-
-      // Repo A only sees its own change — it has no mechanism to learn
-      // about repo B's change. This is the gap: there is no sync.
-      assert.equal(mergedA.tasks['task-1'].status, 'in-progress', 'A status should be updated')
-      assert.equal(
-        mergedA.tasks['task-1'].assignee,
-        'friday',
-        'A should also have B\'s assignee change after merge — FAILS because no sync exists'
-      )
-
-      await repoA.shutdown()
-      await repoB.shutdown()
-    } finally {
-      cleanupTempDir(storageA)
-      cleanupTempDir(storageB)
-    }
+        assert.ok(
+          response && response.type === 'sync-response',
+          'Server should respond to sync messages with a sync-response — FAILS because the WS endpoint only speaks JSON document-state/document-update, not the Automerge sync protocol'
+        )
+      } finally {
+        ws.close()
+        await once(ws, 'close')
+      }
+    })
   })
 })
 

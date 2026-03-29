@@ -223,7 +223,7 @@ describe('patchwork branching', () => {
       const result = await authedPost(server, `/automerge/branch/${branchId}/merge`, {
         agent: 'gary',
       })
-      assert.equal(result.status, 400)
+      assert.equal(result.httpStatus, 400)
       assert.match(result.error, /already merged/i)
     })
   })
