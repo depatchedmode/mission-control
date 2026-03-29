@@ -77,11 +77,23 @@ function requestWebSocketUpgrade(url, options = {}) {
       },
     })
 
+    const timeout = setTimeout(() => {
+      req.destroy(new Error(`Timed out waiting for websocket upgrade response: ${url}`))
+    }, 2000)
+
+    let settled = false
+    const finish = callback => value => {
+      if (settled) return
+      settled = true
+      clearTimeout(timeout)
+      callback(value)
+    }
+
     req.once('response', res => {
       const chunks = []
       res.on('data', chunk => chunks.push(Buffer.from(chunk)))
       res.on('end', () => {
-        resolve({
+        finish(resolve)({
           statusCode: res.statusCode,
           body: Buffer.concat(chunks).toString('utf8'),
           headers: res.headers,
@@ -92,14 +104,14 @@ function requestWebSocketUpgrade(url, options = {}) {
 
     req.once('upgrade', (res, socket, head) => {
       socket.destroy()
-      resolve({
+      finish(resolve)({
         statusCode: res.statusCode ?? 101,
         body: head.toString('utf8'),
         headers: res.headers,
       })
     })
 
-    req.once('error', reject)
+    req.once('error', finish(reject))
     req.end()
   })
 }
