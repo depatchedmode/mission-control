@@ -176,8 +176,11 @@ Tasks were imported during the initial migration phase. Original IDs were preser
 
 ### Testing
 ```bash
-# Unit tests (node:test suites under test/)
+# Supported passing suites
 npm test
+
+# Opt-in roadmap/gap specs (may fail until the product catches up)
+npm run test:gaps
 
 # Install UI dependencies once, then verify the Vite build from repo root
 npm install --prefix ui-prototype
@@ -185,6 +188,8 @@ npm run ui:build
 ```
 
 Archived migration/demo scripts under `scripts/smoke/` are retained for internal reference only and are not part of the supported runtime flow.
+
+`GAP:`-prefixed suites under `test/` are reserved for intentionally failing roadmap/specification checks. They remain runnable through `npm run test:gaps`, but `npm test` excludes them by default.
 
 ### Sync Server
 ```bash

@@ -8,6 +8,9 @@
  * closing the gap between what Mission Control claims and what it does.
  *
  * When a test starts passing, the corresponding issue has been fixed.
+ *
+ * GAP suites stay runnable, but are excluded from `npm test`.
+ * Run them explicitly with `npm run test:gaps`.
  */
 
 import { describe, it } from 'node:test'
@@ -70,7 +73,6 @@ describe('GAP: true CRDT sync via WebSocket', () => {
           'Peer repo should discover server documents via Automerge sync — FAILS because the WS endpoint speaks JSON, not the CBOR-based Automerge sync protocol'
         )
       } finally {
-        adapter.disconnect()
         await peerRepo.shutdown()
       }
     })
