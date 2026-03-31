@@ -15,8 +15,7 @@
 
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
-import { once } from 'node:events'
-import { Repo } from '@automerge/automerge-repo'
+import { Repo, parseAutomergeUrl } from '@automerge/automerge-repo'
 import { WebSocketClientAdapter } from '@automerge/automerge-repo-network-websocket'
 import {
   withStartedServer,
@@ -26,8 +25,51 @@ import {
   getDoc,
   createTask,
   wsUrl,
-  TEST_TOKEN,
 } from '../support/resources.js'
+
+const AUTOMERGE_SYNC_PROBE_TIMEOUT_MS = 3000
+let mentionProcessorImportCount = 0
+
+async function importFreshMentionProcessor() {
+  const moduleUrl = new URL('../daemon/mention-processor.js', import.meta.url)
+  moduleUrl.searchParams.set('instance', String(mentionProcessorImportCount++))
+  return import(moduleUrl.href)
+}
+
+async function findWithTimeout(repo, url, timeoutMs) {
+  const controller = new AbortController()
+  const timeout = setTimeout(() => controller.abort(), timeoutMs)
+
+  try {
+    return await repo.find(url, { signal: controller.signal })
+  } catch {
+    const { documentId } = parseAutomergeUrl(url)
+    const handle = repo.handles[documentId]
+    handle?.delete()
+    delete repo.handles[documentId]
+    return null
+  } finally {
+    clearTimeout(timeout)
+  }
+}
+
+function suppressAutomergeRepoFailureLogs() {
+  const originalLog = console.log
+  console.log = (...args) => {
+    const [first] = args
+    if (
+      typeof first === 'string' &&
+      (first.startsWith('error waiting for ') || first === 'caught whenready')
+    ) {
+      return
+    }
+    originalLog(...args)
+  }
+
+  return () => {
+    console.log = originalLog
+  }
+}
 
 // ─────────────────────────────────────────────────────────────────
 // GAP 1: True CRDT merge is never exercised
@@ -48,32 +90,47 @@ import {
 
 describe('GAP: true CRDT sync via WebSocket', () => {
   it('Automerge Repo peer can sync with the server via WebSocket', async () => {
-    await withStartedServer({ allowLegacyWsQueryToken: true }, async server => {
-      const url = wsUrl(server, `/?token=${TEST_TOKEN}`)
+    await withStartedServer({}, async server => {
+      const { ticket } = await authedPost(server, '/automerge/ws-ticket', {})
+      const transportUrl = wsUrl(server, `/?ticket=${ticket}`)
+      const { url: documentUrl } = await authedGet(server, '/automerge/url')
 
       // Connect a real Automerge Repo using its native WS adapter.
       // The adapter sends CBOR-encoded binary messages (join, sync);
       // the server only understands JSON — so this will fail.
-      // Disable reconnection so the test doesn't hang.
-      const adapter = new WebSocketClientAdapter(url, 0)
+      // Use a long retry interval so a failed handshake does not
+      // immediately consume the single-use WS ticket on reconnect.
+      const adapter = new WebSocketClientAdapter(transportUrl, 60_000)
       const peerRepo = new Repo({ network: [adapter] })
+      const restoreLog = suppressAutomergeRepoFailureLogs()
 
       try {
-        // Give the adapter time to attempt its handshake.
-        await new Promise(resolve => setTimeout(resolve, 1000))
-
-        // In a working CRDT sync setup, the peer repo would discover
-        // the server's document and be able to read it. Instead, the
-        // protocol mismatch means no documents are shared.
-        const handles = peerRepo.handles
-        const syncedDocCount = Object.keys(handles).length
+        // In a working CRDT sync setup, clients can fetch the document
+        // URL over HTTP and resolve that URL through the Automerge sync
+        // transport. Today the WebSocket endpoint still speaks custom
+        // JSON instead of the Automerge binary sync protocol, so the
+        // repo never resolves the requested document. The probe timeout
+        // must exceed the adapter's 1s readiness fallback so a future
+        // sync implementation still has time to request and resolve it.
+        const handle = await findWithTimeout(
+          peerRepo,
+          documentUrl,
+          AUTOMERGE_SYNC_PROBE_TIMEOUT_MS
+        )
+        const doc = handle?.doc()
 
         assert.ok(
-          syncedDocCount > 0,
-          'Peer repo should discover server documents via Automerge sync — FAILS because the WS endpoint speaks JSON, not the CBOR-based Automerge sync protocol'
+          handle?.isReady() && doc?.name === 'Mission Control',
+          'Peer repo should resolve the server document URL via Automerge sync — FAILS because the WS endpoint still speaks JSON, not the CBOR-based Automerge sync protocol'
         )
       } finally {
-        await peerRepo.shutdown()
+        adapter.socket?.terminate?.()
+        try {
+          await peerRepo.shutdown()
+          await new Promise(resolve => setTimeout(resolve, 50))
+        } finally {
+          restoreLog()
+        }
       }
     })
   })
@@ -84,31 +141,103 @@ describe('GAP: true CRDT sync via WebSocket', () => {
 //
 // If the daemon delivers a mention notification but crashes before
 // marking it delivered, the next poll will deliver it again.
-// There's no idempotency token or dedup mechanism.
+// The fix should be an end-to-end behavior guarantee rather than
+// a requirement for one particular payload field.
 // ─────────────────────────────────────────────────────────────────
 
 describe('GAP: mention delivery duplicate protection', () => {
-  it('mentions include an idempotency key for safe redelivery', async () => {
-    await withStartedServer({}, async server => {
-      const taskId = await createTask(server)
+  it('the daemon notifies a mention at most once across duplicate poll cycles', async () => {
+    const replayedMention = {
+      id: 'mention-1',
+      idempotency_key: 'delivery-key-1',
+      from_agent: 'alice',
+      to_agent: 'bob',
+      taskId: 'task-123',
+      content: '@bob please review',
+    }
+    const secondMention = {
+      id: 'mention-2',
+      idempotency_key: 'delivery-key-2',
+      from_agent: 'alice',
+      to_agent: 'bob',
+      taskId: 'task-123',
+      content: '@bob please review',
+    }
+    const doc = {
+      agents: {
+        bob: {
+          name: 'bob',
+        },
+      },
+    }
+    let downstreamNotifications = 0
+    const deliveredKeys = new Set()
 
-      await authedPost(server, '/automerge/comment', {
-        taskId,
-        text: '@bob please review',
-        agent: 'alice',
-      })
+    function extractDeliveryKey(message) {
+      if (typeof message === 'string') {
+        for (const key of [
+          replayedMention.id,
+          replayedMention.idempotency_key,
+          secondMention.id,
+          secondMention.idempotency_key,
+        ]) {
+          if (message.includes(key)) return key
+        }
+        return null
+      }
 
-      const { mentions } = await authedGet(server, '/automerge/mentions/pending?agent=bob')
-      assert.equal(mentions.length, 1)
+      if (!message || typeof message !== 'object') return null
 
-      // A mention should carry an idempotency_key that the daemon can
-      // pass to the delivery target, allowing the target to deduplicate
-      // if the same mention is delivered twice.
-      assert.ok(
-        mentions[0].idempotency_key,
-        'Mention should have an idempotency_key for safe redelivery — FAILS because no dedup mechanism exists'
-      )
+      const candidates = [
+        message.id,
+        message.mentionId,
+        message.mention_id,
+        message.idempotencyKey,
+        message.idempotency_key,
+      ]
+      return candidates.find(candidate => typeof candidate === 'string') || null
+    }
+
+    const deps = {
+      doc,
+      wakeAgent: async (_agentId, message) => {
+        const key = extractDeliveryKey(message)
+        if (key && deliveredKeys.has(key)) {
+          return true
+        }
+        if (key) {
+          deliveredKeys.add(key)
+        }
+        downstreamNotifications += 1
+        return true
+      },
+      markDelivered: async () => {},
+      log: () => {},
+    }
+
+    // Simulate a crash window where one mention is replayed in a later
+    // poll before its delivered flag is durably advanced, alongside a
+    // second mention with the same visible text. Each poll intentionally
+    // uses a fresh module instance to model a daemon restart, so a fix
+    // that only keeps dedupe state in memory does not satisfy the test.
+    const { processPendingMentions: firstPollProcessor } =
+      await importFreshMentionProcessor()
+    await firstPollProcessor({
+      pendingMentions: [replayedMention],
+      ...deps,
     })
+    const { processPendingMentions: replayPollProcessor } =
+      await importFreshMentionProcessor()
+    await replayPollProcessor({
+      pendingMentions: [replayedMention, secondMention],
+      ...deps,
+    })
+
+    assert.equal(
+      downstreamNotifications,
+      2,
+      'Two logical mentions should yield exactly two downstream notifications even if one is replayed in a later poll cycle — FAILS because duplicate deliveries are indistinguishable from a distinct second mention with the same visible text'
+    )
   })
 })
 
@@ -143,16 +272,25 @@ describe('GAP: task update and history recording are atomic', () => {
       //   1. docHandle.change() to apply the update + push to activity
       //   2. store.recordTaskChange() which does another docHandle.change()
       // This means history is written in a separate transaction.
+      let changeCount = 0
+      const onChange = () => {
+        changeCount += 1
+      }
+      server.store.docHandle.on('change', onChange)
 
-      await authedPatch(server, `/automerge/task/${taskId}`, {
-        status: 'in-progress',
-        agent: 'agent-a',
-      })
+      try {
+        await authedPatch(server, `/automerge/task/${taskId}`, {
+          status: 'in-progress',
+          agent: 'agent-a',
+        })
+      } finally {
+        server.store.docHandle.off('change', onChange)
+      }
 
       const doc = await getDoc(server)
 
-      // The activity entry and the taskHistory entry should have the
-      // exact same timestamp, proving they were written atomically.
+      // One request should result in one Automerge document change.
+      // Today the HTTP handler still performs two separate writes.
       const activityEntry = doc.activity.find(
         a => a.type === 'task_updated' && a.taskId === taskId
       )
@@ -165,9 +303,9 @@ describe('GAP: task update and history recording are atomic', () => {
       assert.ok(historyEntry, 'Should have history entry')
 
       assert.equal(
-        activityEntry.timestamp,
-        historyEntry.timestamp,
-        'Activity and history timestamps should match (proving atomicity) — FAILS because they are written in separate docHandle.change() calls with different Date.now() values'
+        changeCount,
+        1,
+        'A single HTTP PATCH should produce exactly one Automerge document change — FAILS because the route still updates the task and taskHistory in separate docHandle.change() calls'
       )
     })
   })
