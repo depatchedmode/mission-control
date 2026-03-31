@@ -25,6 +25,8 @@ export default function MissionControlSync() {
   const [mobileActiveColumn, setMobileActiveColumn] = useState('in-progress')
   const [view, setView] = useState('board') // 'board' or 'activity'
   const wsRef = useRef(null)
+  // connectToSyncServer is only ever the first-render fn (effect + onclose retry); doc in that closure is always null.
+  const hasReceivedDocRef = useRef(false)
   
   useEffect(() => {
     connectToSyncServer()
@@ -38,7 +40,8 @@ export default function MissionControlSync() {
   }, [])
   
   const connectToSyncServer = async () => {
-    setLoading(true)
+    setError(null)
+    if (!hasReceivedDocRef.current) setLoading(true)
     if (wsRef.current) wsRef.current.close()
     try {
       const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -47,8 +50,16 @@ export default function MissionControlSync() {
       wsRef.current = ws
       ws.onopen = () => { setConnected(true); setError(null) }
       ws.onmessage = (event) => {
-        const message = JSON.parse(event.data)
+        let message
+        try {
+          message = JSON.parse(event.data)
+        } catch {
+          setError('Invalid sync message from server')
+          if (!hasReceivedDocRef.current) setLoading(false)
+          return
+        }
         if (message.type === 'document-state' || message.type === 'document-update') {
+          hasReceivedDocRef.current = true
           setDoc(message.doc)
           setLoading(false)
           // Update selected task if it changed
@@ -58,7 +69,10 @@ export default function MissionControlSync() {
         }
       }
       ws.onclose = () => { setConnected(false); setTimeout(connectToSyncServer, 3000) }
-      ws.onerror = () => setError('Connection failed')
+      ws.onerror = () => {
+        setError('Connection failed')
+        if (!hasReceivedDocRef.current) setLoading(false)
+      }
     } catch (error) { setError(error.message); setLoading(false) }
   }
 
@@ -105,7 +119,17 @@ export default function MissionControlSync() {
   }
   
   if (loading) return <div style={styles.centered}><div style={styles.spinner} /><p style={styles.loadingText}>Connecting...</p></div>
-  if (!doc) return <div style={styles.centered}><p style={styles.loadingText}>Loading...</p></div>
+  if (!doc) {
+    if (error) {
+      return (
+        <div style={styles.centered}>
+          <p style={{ ...styles.loadingText, color: '#fecaca', marginBottom: 16 }}>{error}</p>
+          <button type="button" style={styles.btnPrimary} onClick={() => connectToSyncServer()}>Retry</button>
+        </div>
+      )
+    }
+    return <div style={styles.centered}><p style={styles.loadingText}>Loading...</p></div>
+  }
   
   const tasks = Object.values(doc.tasks || {})
   const agents = Object.values(doc.agents || {})
