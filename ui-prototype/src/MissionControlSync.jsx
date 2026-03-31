@@ -62,6 +62,7 @@ export default function MissionControlSync() {
   const [error, setError] = useState(null)
   const [showNewTask, setShowNewTask] = useState(false)
   const [selectedTask, setSelectedTask] = useState(null)
+  const [selectedTrace, setSelectedTrace] = useState(null)
   const [draggedTask, setDraggedTask] = useState(null)
   const [mobileActiveColumn, setMobileActiveColumn] = useState('in-progress')
   const [view, setView] = useState('board') // 'board' or 'activity'
@@ -152,6 +153,19 @@ export default function MissionControlSync() {
     sendChange({ type: 'comment-add', taskId, comment: { id: 'c-' + Math.random().toString(36).substr(2, 9), text, agent: 'depatched', timestamp: new Date().toISOString() } })
   }
   
+  const fetchTraceDetails = async (commitHash) => {
+    try {
+      const data = await requestJson('', `/mc-api/automerge/trace/${encodeURIComponent(commitHash)}`, {
+        token: API_TOKEN,
+      })
+      if (data.success) {
+        setSelectedTrace(data)
+      }
+    } catch (error) {
+      console.error('Failed to fetch trace:', error)
+    }
+  }
+  
   const handleDrop = (taskId, newStatus) => {
     if (draggedTask && draggedTask.status !== newStatus) {
       updateTask(taskId, { status: newStatus })
@@ -236,7 +250,7 @@ export default function MissionControlSync() {
       {/* Mobile FAB */}
       <button className="mc-fab" onClick={() => setShowNewTask(true)}>+</button>
       </>) : (
-        <ActivityView doc={doc} onSelectTask={setSelectedTask} />
+        <ActivityView doc={doc} onSelectTask={setSelectedTask} fetchTraceDetails={fetchTraceDetails} />
       )}
       
       {showNewTask && <NewTaskModal onClose={() => setShowNewTask(false)} onCreate={createTask} />}
@@ -251,6 +265,15 @@ export default function MissionControlSync() {
           onClose={() => setSelectedTask(null)}
           onUpdate={updateTask}
           onComment={addComment}
+          fetchTraceDetails={fetchTraceDetails}
+        />
+      )}
+      
+      {selectedTrace && (
+        <TraceModal 
+          trace={selectedTrace.trace}
+          githubUrl={selectedTrace.githubUrl}
+          onClose={() => setSelectedTrace(null)}
         />
       )}
     </div>
@@ -358,7 +381,7 @@ function NewTaskModal({ onClose, onCreate }) {
   )
 }
 
-function TaskDetailModal({ task, comments, agents, onClose, onUpdate, onComment, taskHistory, taskActivity }) {
+function TaskDetailModal({ task, comments, agents, onClose, onUpdate, onComment, taskHistory, taskActivity, fetchTraceDetails }) {
   const [commentText, setCommentText] = useState('')
   const [showMentions, setShowMentions] = useState(false)
   const [mentionFilter, setMentionFilter] = useState('')
@@ -494,6 +517,7 @@ function TaskDetailModal({ task, comments, agents, onClose, onUpdate, onComment,
             taskHistory={taskHistory}
             comments={comments}
             taskActivity={taskActivity}
+            fetchTraceDetails={fetchTraceDetails}
             formatTime={formatRelativeTime}
             scrollToRecent={scrollToRecent}
             commentsContainerRef={commentsContainerRef}
@@ -512,7 +536,7 @@ function TaskDetailModal({ task, comments, agents, onClose, onUpdate, onComment,
   )
 }
 
-function TaskHistory({ taskHistory, comments, taskActivity, formatTime, scrollToRecent, commentsContainerRef, commentsEndRef, commentText, handleCommentChange, handleComment, inputRef, showMentions, filteredAgents, insertMention }) {
+function TaskHistory({ taskHistory, comments, taskActivity, fetchTraceDetails, formatTime, scrollToRecent, commentsContainerRef, commentsEndRef, commentText, handleCommentChange, handleComment, inputRef, showMentions, filteredAgents, insertMention }) {
   const history = useMemo(() => {
     const items = []
     const commitHashes = new Set()
@@ -576,7 +600,13 @@ function TaskHistory({ taskHistory, comments, taskActivity, formatTime, scrollTo
               <div key={entry.commit?.hash || `commit-${entry.timestamp}-${entry.agent}`} style={{ ...styles.commitEntry, borderLeft: `4px solid ${borderColors.commit}` }}>
                 <div style={styles.commitHeader}>
                   <span>{icon}</span>
-                  <code style={styles.commitHash}>{entry.commit.shortHash}</code>
+                  <code 
+                    style={{...styles.commitHash, cursor: 'pointer'}} 
+                    onClick={() => fetchTraceDetails(entry.commit.hash)}
+                    title="Click to view trace details"
+                  >
+                    {entry.commit.shortHash}
+                  </code>
                   <span style={styles.commitAgent}>@{entry.agent}</span>
                   <span style={styles.commentTimeRight}>{formatTime(entry.timestamp)}</span>
                 </div>
@@ -633,9 +663,9 @@ function TaskHistory({ taskHistory, comments, taskActivity, formatTime, scrollTo
   )
 }
 
-function ActivityView({ doc, onSelectTask }) {
+function ActivityView({ doc, onSelectTask, fetchTraceDetails }) {
   const [filters, setFilters] = useState({
-    commit: true, comment: true, status: true, task: true, branch: true, agent: true,
+    commit: true, comment: true, status: true, task: true, branch: true, agent: true
   })
 
   const toggleFilter = (key) => setFilters((f) => ({ ...f, [key]: !f[key] }))
@@ -724,6 +754,7 @@ function ActivityView({ doc, onSelectTask }) {
               entry={entry}
               formatTime={formatRelativeTime}
               onSelectTask={onSelectTask}
+              fetchTraceDetails={fetchTraceDetails}
             />
           ))}
           {filtered.length === 0 && (
@@ -767,7 +798,7 @@ const kindIcons = {
   other: '●',
 }
 
-function TimelineEntry({ entry, formatTime, onSelectTask }) {
+function TimelineEntry({ entry, formatTime, onSelectTask, fetchTraceDetails }) {
   const borderColor = borderColors[entry._kind] || '#333'
   const icon = kindIcons[entry._kind] || '●'
   
@@ -779,7 +810,16 @@ function TimelineEntry({ entry, formatTime, onSelectTask }) {
       <div style={{ ...styles.timelineItem, borderLeftColor: borderColor }} onClick={handleClick}>
         <div style={styles.timelineItemTop}>
           <span>{icon}</span>
-          <code style={styles.commitHash}>{entry.commit.shortHash}</code>
+          <code 
+            style={{...styles.commitHash, cursor: 'pointer'}} 
+            onClick={(e) => {
+              e.stopPropagation()
+              fetchTraceDetails(entry.commit.hash)
+            }}
+            title="Click to view trace details"
+          >
+            {entry.commit.shortHash}
+          </code>
           <span style={styles.commitAgent}>@{entry.agent}</span>
           <span style={styles.activityTime}>{formatTime(entry.timestamp)}</span>
         </div>
@@ -802,6 +842,96 @@ function TimelineEntry({ entry, formatTime, onSelectTask }) {
       </div>
       {entry.taskTitle && <div style={styles.activityTaskLink}>{entry.taskTitle}</div>}
       {entry.details && <div style={styles.activityDetails}>{entry.details}</div>}
+    </div>
+  )
+}
+
+function TraceModal({ trace, githubUrl, onClose }) {
+  const formatFileStats = (stat) => {
+    if (!stat) return null
+    return stat.split('\n').filter(Boolean).map((line, i) => (
+      <div key={i} style={styles.traceFileLine}>{line}</div>
+    ))
+  }
+  
+  return (
+    <div style={styles.modalOverlay} onClick={onClose}>
+      <div style={styles.traceModal} onClick={e => e.stopPropagation()}>
+        <div style={styles.detailHeader}>
+          <div>
+            <h2 style={styles.modalTitle}>Agent Trace</h2>
+            <code style={styles.traceCommitHash}>{trace.commit.hash.substring(0, 12)}</code>
+          </div>
+          <button style={styles.closeBtn} onClick={onClose}>×</button>
+        </div>
+        
+        <div style={styles.traceContent}>
+          {/* Commit Info */}
+          <div style={styles.traceSection}>
+            <h3 style={styles.traceSectionTitle}>Commit</h3>
+            <div style={styles.traceCommitMessage}>{trace.commit.message}</div>
+            <div style={styles.traceMetaRow}>
+              <span style={styles.traceLabel}>Author:</span>
+              <span style={styles.traceValue}>{trace.commit.author}</span>
+            </div>
+            <div style={styles.traceMetaRow}>
+              <span style={styles.traceLabel}>Timestamp:</span>
+              <span style={styles.traceValue}>{new Date(trace.timestamp).toLocaleString()}</span>
+            </div>
+            {githubUrl && (
+              <div style={styles.traceMetaRow}>
+                <a href={githubUrl} target="_blank" rel="noopener noreferrer" style={styles.traceLink}>
+                  View on GitHub →
+                </a>
+              </div>
+            )}
+          </div>
+          
+          {/* Agent Info */}
+          <div style={styles.traceSection}>
+            <h3 style={styles.traceSectionTitle}>Agent</h3>
+            <div style={styles.traceMetaRow}>
+              <span style={styles.traceLabel}>Name:</span>
+              <span style={styles.traceValue}>@{trace.agent.name}</span>
+            </div>
+            {trace.agent.model && (
+              <div style={styles.traceMetaRow}>
+                <span style={styles.traceLabel}>Model:</span>
+                <span style={styles.traceValue}>{trace.agent.model}</span>
+              </div>
+            )}
+            {trace.agent.sessionKey && (
+              <div style={styles.traceMetaRow}>
+                <span style={styles.traceLabel}>Session:</span>
+                <code style={styles.traceCode}>{trace.agent.sessionKey}</code>
+              </div>
+            )}
+          </div>
+          
+          {/* Task Link */}
+          {trace.task && (
+            <div style={styles.traceSection}>
+              <h3 style={styles.traceSectionTitle}>Linked Task</h3>
+              <code style={styles.traceCode}>{trace.task}</code>
+            </div>
+          )}
+          
+          {/* Diff Stats */}
+          {trace.diff && (
+            <div style={styles.traceSection}>
+              <h3 style={styles.traceSectionTitle}>Changes</h3>
+              {trace.diff.shortstat && (
+                <div style={styles.traceDiffSummary}>{trace.diff.shortstat}</div>
+              )}
+              {trace.diff.stat && (
+                <div style={styles.traceFileStats}>
+                  {formatFileStats(trace.diff.stat)}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
     </div>
   )
 }
@@ -934,6 +1064,22 @@ const styles = {
   mentionDropdown: { position: 'absolute', bottom: '100%', left: 0, right: 0, background: '#111', border: '1px solid #333', borderRadius: 8, marginBottom: 4, maxHeight: 200, overflow: 'auto' },
   mentionItem: { padding: '10px 14px', cursor: 'pointer', fontSize: 14, color: '#e5e5e5' },
   mentionRole: { color: '#666', marginLeft: 8, fontSize: 12 },
+  
+  // Trace Modal
+  traceModal: { background: '#111', borderRadius: 12, width: '100%', maxWidth: 600, maxHeight: '90vh', overflow: 'hidden', display: 'flex', flexDirection: 'column', border: '1px solid #222', margin: 20 },
+  traceContent: { flex: 1, overflow: 'auto', padding: 24 },
+  traceSection: { marginBottom: 24 },
+  traceSectionTitle: { fontSize: 14, fontWeight: 600, color: '#888', textTransform: 'uppercase', letterSpacing: '0.05em', margin: '0 0 12px' },
+  traceCommitHash: { fontSize: 13, color: '#10b981', fontFamily: 'monospace', background: '#0a0a0a', padding: '4px 8px', borderRadius: 4 },
+  traceCommitMessage: { fontSize: 16, color: '#fff', marginBottom: 12, lineHeight: 1.4 },
+  traceMetaRow: { display: 'flex', gap: 12, marginBottom: 8, alignItems: 'center' },
+  traceLabel: { fontSize: 13, color: '#666', minWidth: 80 },
+  traceValue: { fontSize: 13, color: '#e5e5e5' },
+  traceCode: { fontSize: 12, color: '#10b981', fontFamily: 'monospace', background: '#0a0a0a', padding: '4px 8px', borderRadius: 4 },
+  traceLink: { fontSize: 13, color: '#10b981', textDecoration: 'none' },
+  traceDiffSummary: { fontSize: 13, color: '#888', marginBottom: 12, fontFamily: 'monospace' },
+  traceFileStats: { background: '#0a0a0a', border: '1px solid #1a1a1a', borderRadius: 8, padding: 12, fontFamily: 'monospace', fontSize: 12 },
+  traceFileLine: { color: '#888', marginBottom: 4, whiteSpace: 'pre' },
 }
 
 const DETAIL_MARKDOWN_COMPONENTS = {

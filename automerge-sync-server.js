@@ -12,7 +12,9 @@ import { AutomergeStore } from './lib/automerge-store.js'
 import express from 'express'
 import crypto from 'crypto'
 import { createServer } from 'node:http'
+import { execSync } from 'node:child_process'
 import { fileURLToPath } from 'url'
+import { findGitRoot, getTraceByCommit } from './lib/agent-trace.js'
 
 const DEFAULT_HTTP_PORT = 8004
 const DEFAULT_WS_PORT = 8005
@@ -453,7 +455,88 @@ class AutomergeSyncServer {
       }
     })
     
-    // Update last-seen timestamp for a task (read/unread helper — global lastSeen map in this prototype)
+    // Get agent trace for a specific commit
+    this.app.get('/automerge/trace/:commitHash', async (req, res) => {
+      try {
+        const { commitHash } = req.params
+        const repoPath = req.query.repoPath || process.cwd()
+        
+        const gitRoot = findGitRoot(repoPath)
+        if (!gitRoot) {
+          return res.status(404).json({ error: 'Not a git repository' })
+        }
+        
+        const trace = getTraceByCommit(gitRoot, commitHash)
+        if (!trace) {
+          return res.status(404).json({ error: 'Trace not found for this commit' })
+        }
+        
+        // Try to get GitHub remote URL
+        let githubUrl = null
+        try {
+          const remote = execSync('git config --get remote.origin.url', {
+            cwd: gitRoot,
+            encoding: 'utf-8'
+          }).trim()
+          
+          // Parse GitHub URL (supports both HTTPS and SSH formats)
+          if (remote.includes('github.com')) {
+            let repo = remote
+              .replace(/^https:\/\/github\.com\//, '')
+              .replace(/^git@github\.com:/, '')
+              .replace(/\.git$/, '')
+            githubUrl = `https://github.com/${repo}/commit/${commitHash}`
+          }
+        } catch {
+          // No remote or not GitHub, that's fine
+        }
+        
+        res.json({ 
+          success: true, 
+          trace,
+          githubUrl 
+        })
+      } catch (error) {
+        res.status(500).json({ error: error.message })
+      }
+    })
+    
+    // Get GitHub remote URL for current repo
+    this.app.get('/automerge/github-remote', async (req, res) => {
+      try {
+        const repoPath = req.query.repoPath || process.cwd()
+        const gitRoot = findGitRoot(repoPath)
+        
+        if (!gitRoot) {
+          return res.status(404).json({ error: 'Not a git repository' })
+        }
+        
+        try {
+          const remote = execSync('git config --get remote.origin.url', {
+            cwd: gitRoot,
+            encoding: 'utf-8'
+          }).trim()
+          
+          // Parse GitHub URL
+          if (remote.includes('github.com')) {
+            let repo = remote
+              .replace(/^https:\/\/github\.com\//, '')
+              .replace(/^git@github\.com:/, '')
+              .replace(/\.git$/, '')
+            const githubUrl = `https://github.com/${repo}`
+            res.json({ success: true, githubUrl, repo })
+          } else {
+            res.json({ success: true, githubUrl: null })
+          }
+        } catch {
+          res.json({ success: true, githubUrl: null })
+        }
+      } catch (error) {
+        res.status(500).json({ error: error.message })
+      }
+    })
+    
+    // Update last-seen timestamp for a task (read/unread helper - global lastSeen map in this prototype)
     this.app.post('/automerge/last-seen', async (req, res) => {
       try {
         const { taskId, timestamp } = req.body
