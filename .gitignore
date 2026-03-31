@@ -5,3 +5,4 @@ node_modules/
 .agent-trace/
 ui-prototype/node_modules/
 ui-prototype/dist/
+.env
