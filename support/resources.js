@@ -1,4 +1,5 @@
 import { mkdtempSync, rmSync } from 'node:fs'
+import { setTimeout as delay } from 'node:timers/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { once } from 'node:events'
@@ -46,8 +47,12 @@ export async function withStartedServer(overrides, fn) {
     await server.start()
     return await fn(server)
   } finally {
-    await server.stop()
-    cleanupTempDir(storagePath)
+    try {
+      await server.stop()
+      await delay(25)
+    } finally {
+      cleanupTempDir(storagePath)
+    }
   }
 }
 
