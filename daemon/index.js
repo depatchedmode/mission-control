@@ -8,6 +8,7 @@
  */
 
 import { requestJson } from '../lib/sync-client.js'
+import { processPendingMentions } from './mention-processor.js'
 
 const SYNC_SERVER = process.env.MC_SYNC_SERVER || `http://localhost:${process.env.MC_HTTP_PORT || '8004'}`;
 const POLL_INTERVAL_MS = 3000;
@@ -90,28 +91,13 @@ async function processMentions() {
   
   log(`Found ${pendingMentions.length} pending mention(s)`);
   const doc = await getDocument();
-  let processed = 0;
-  
-  for (const mention of pendingMentions) {
-    const agent = doc.agents[mention.to_agent];
-    
-    if (!agent) {
-      log(`⚠️ No agent registered for @${mention.to_agent}`);
-      continue;
-    }
-    
-    const message = `📬 @${mention.from_agent} mentioned you on ${mention.taskId}: "${mention.content.substring(0, 100)}..."`;
-    
-    const success = await wakeAgent(mention.to_agent, message);
-    
-    if (success) {
-      await markDelivered(mention.id);
-      processed++;
-      log(`✅ Processed mention ${mention.id} for @${mention.to_agent}`);
-    }
-  }
-  
-  return processed;
+  return processPendingMentions({
+    pendingMentions,
+    doc,
+    wakeAgent,
+    markDelivered,
+    log,
+  });
 }
 
 async function runDaemon() {
