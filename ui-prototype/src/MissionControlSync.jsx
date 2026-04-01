@@ -347,8 +347,6 @@ function TaskDetailModal({ task, comments, agents, onClose, onUpdate, onComment,
   
   const statusCycle = { 'todo': 'up-next', 'backlog': 'up-next', 'up-next': 'in-progress', 'in-progress': 'review', 'review': 'completed', 'completed': 'backlog' }
   const statusLabels = { 'todo': 'Backlog', 'backlog': 'Backlog', 'up-next': 'Up Next', 'in-progress': 'In Progress', 'review': 'Review', 'completed': 'Done' }
-  const currentPriority = PRIORITIES.find(p => p.value === task.priority) || PRIORITIES[2]
-  
   const handleCommentChange = (e) => {
     const val = e.target.value
     setCommentText(val)

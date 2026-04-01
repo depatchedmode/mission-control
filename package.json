@@ -22,9 +22,7 @@
   "dependencies": {
     "@automerge/automerge-repo": "^2.5.1",
     "@automerge/automerge-repo-network-websocket": "^2.5.1",
-    "cors": "^2.8.5",
     "express": "^4.18.2",
-    "js-yaml": "^4.1.1",
     "ws": "^8.14.2"
   }
 }
