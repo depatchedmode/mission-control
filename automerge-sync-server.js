@@ -541,58 +541,26 @@ class AutomergeSyncServer {
       try {
         const { taskId } = req.params
         const { status, assignee, title, description, priority, agent } = req.body
-        
-        const doc = this.store.getDoc()
-        if (!doc.tasks?.[taskId]) {
-          return res.status(404).json({ error: `Task ${taskId} not found` })
+
+        const updates = {}
+        if (status !== undefined) updates.status = status
+        if (assignee !== undefined) updates.assignee = assignee || null
+        if (title !== undefined) updates.title = title
+        if (description !== undefined) updates.description = description
+        if (priority !== undefined) updates.priority = priority
+
+        const result = await this.store.updateTask(taskId, updates, agent || 'api')
+        if (!result.success) {
+          if (result.error === 'Task not found') {
+            return res.status(404).json({ error: `Task ${taskId} not found` })
+          }
+          return res.status(500).json({ error: result.error || 'Task update failed' })
         }
-        
-        const changes = []
-        
-        await this.store.docHandle.change(doc => {
-          if (status && doc.tasks[taskId].status !== status) {
-            changes.push({ field: 'status', old: doc.tasks[taskId].status, new: status })
-            doc.tasks[taskId].status = status
-          }
-          if (assignee !== undefined && doc.tasks[taskId].assignee !== assignee) {
-            changes.push({ field: 'assignee', old: doc.tasks[taskId].assignee, new: assignee })
-            doc.tasks[taskId].assignee = assignee || null
-          }
-          if (title && doc.tasks[taskId].title !== title) {
-            changes.push({ field: 'title', old: doc.tasks[taskId].title, new: title })
-            doc.tasks[taskId].title = title
-          }
-          if (description !== undefined && doc.tasks[taskId].description !== description) {
-            changes.push({ field: 'description', old: doc.tasks[taskId].description, new: description })
-            doc.tasks[taskId].description = description
-          }
-          if (priority && doc.tasks[taskId].priority !== priority) {
-            changes.push({ field: 'priority', old: doc.tasks[taskId].priority, new: priority })
-            doc.tasks[taskId].priority = priority
-          }
-          
-          if (changes.length > 0) {
-            doc.tasks[taskId].updated_at = new Date().toISOString()
-            
-            if (!doc.activity) doc.activity = []
-            doc.activity.push({
-              id: Math.random().toString(16).slice(2),
-              type: 'task_updated',
-              agent: agent || 'api',
-              taskId,
-              // Detailed changes tracked in taskHistory, not here
-              timestamp: new Date().toISOString()
-            })
-          }
-        })
-        
-        // Record to taskHistory for Patchwork diff tracking
-        if (changes.length > 0) {
-          await this.store.recordTaskChange(taskId, changes, agent || 'api')
+
+        if (result.changes.length > 0) {
+          this.broadcastDocumentUpdate()
         }
-        
-        this.broadcastDocumentUpdate()
-        res.json({ success: true, taskId, changes })
+        res.json({ success: true, taskId, changes: result.changes })
       } catch (error) {
         res.status(500).json({ error: error.message })
       }

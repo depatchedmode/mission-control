@@ -242,20 +242,13 @@ describe('GAP: mention delivery duplicate protection', () => {
 })
 
 // ─────────────────────────────────────────────────────────────────
-// GAP 3: PATCH endpoint computes diff outside the atomic change
+// GAP: task PATCH atomicity (regression guard)
 //
-// In automerge-sync-server.js, PATCH /automerge/task/:taskId reads
-// the current doc via store.getDoc() (a snapshot), computes which
-// fields changed, then enters docHandle.change() to apply them.
-// The diff computation and the write are NOT in the same atomic
-// block. The HTTP handler also records changes in two separate
-// docHandle.change() calls (one for the update, one via
-// recordTaskChange for history) — meaning another request could
-// interleave between them.
-//
-// This test verifies that the update AND its history entry are
-// recorded atomically. Today they aren't — the update and the
-// history write are separate docHandle.change() calls.
+// PATCH /automerge/task/:taskId delegates to AutomergeStore.updateTask(),
+// which applies task fields, taskHistory, and task_updated activity inside
+// a single docHandle.change(). This suite guards that one mutating PATCH
+// still produces exactly one Automerge change event (historically a gap
+// when the handler used two separate change() calls).
 // ─────────────────────────────────────────────────────────────────
 
 describe('GAP: task update and history recording are atomic', () => {
@@ -267,11 +260,7 @@ describe('GAP: task update and history recording are atomic', () => {
         priority: 'p2',
       })
 
-      // Patch the task — this should record the update AND its history
-      // in a single docHandle.change() call. Currently the server does:
-      //   1. docHandle.change() to apply the update + push to activity
-      //   2. store.recordTaskChange() which does another docHandle.change()
-      // This means history is written in a separate transaction.
+      // Mutating PATCH should perform one docHandle.change() via updateTask.
       let changeCount = 0
       const onChange = () => {
         changeCount += 1
@@ -289,8 +278,6 @@ describe('GAP: task update and history recording are atomic', () => {
 
       const doc = await getDoc(server)
 
-      // One request should result in one Automerge document change.
-      // Today the HTTP handler still performs two separate writes.
       const activityEntry = doc.activity.find(
         a => a.type === 'task_updated' && a.taskId === taskId
       )
@@ -305,7 +292,7 @@ describe('GAP: task update and history recording are atomic', () => {
       assert.equal(
         changeCount,
         1,
-        'A single HTTP PATCH should produce exactly one Automerge document change — FAILS because the route still updates the task and taskHistory in separate docHandle.change() calls'
+        'A single HTTP PATCH that mutates the task should produce exactly one Automerge document change'
       )
     })
   })
