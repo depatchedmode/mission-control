@@ -20,7 +20,7 @@ export default defineConfig({
   server: {
     host: '0.0.0.0',
     port: 5174,
-    allowedHosts,
+    allowedHosts: true,
     fs: {
       allow: ['..']
     },
@@ -35,6 +35,11 @@ export default defineConfig({
         rewrite: (path) => path.replace(/^\/mc-api/, '')
       }
     }
+  },
+  preview: {
+    host: '0.0.0.0',
+    port: 4173,
+    allowedHosts: true,
   },
   build: {
     target: 'esnext'
