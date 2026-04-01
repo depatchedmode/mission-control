@@ -3,8 +3,8 @@
 /**
  * Mission Control CLI
  *
- * Supported runtime path:
- * - automerge-sync-server.js is the state authority
+ * Current implementation (hub-and-spoke):
+ * - automerge-sync-server.js is the HTTP/WebSocket hub
  * - CLI commands talk to the sync server over HTTP
  * - UI connects through the sync server's HTTP/WebSocket APIs
  *
