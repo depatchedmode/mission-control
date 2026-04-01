@@ -3,8 +3,8 @@
 /**
  * Automerge Sync Server
  *
- * Supported runtime state authority for Mission Control.
- * CLI, daemon, and UI clients all talk to this process.
+ * HTTP/WebSocket hub for the current Mission Control deployment.
+ * CLI, daemon, and UI clients talk to this process.
  */
 
 import { WebSocketServer } from 'ws'
@@ -453,7 +453,7 @@ class AutomergeSyncServer {
       }
     })
     
-    // Update last-seen timestamp for a task (for read/unread sync - single user, global state)
+    // Update last-seen timestamp for a task (read/unread helper — global lastSeen map in this prototype)
     this.app.post('/automerge/last-seen', async (req, res) => {
       try {
         const { taskId, timestamp } = req.body

@@ -4,7 +4,7 @@ import remarkGfm from 'remark-gfm'
 import { requestJson, withBearerAuthHeaders } from '../../lib/sync-client.js'
 import { activityTaskId } from '../../lib/activity-task-id.js'
 
-// Global lastSeen state (single user, synced across all devices via Automerge)
+// Global lastSeen map (current single-operator prototype; stored in the shared Automerge doc)
 const API_TOKEN = import.meta.env.VITE_MC_API_TOKEN || null
 
 const PRIORITIES = [
@@ -324,7 +324,7 @@ function TaskDetailModal({ task, comments, agents, onClose, onUpdate, onComment,
   useEffect(() => {
     if (comments.length > 0) {
       const latestTimestamp = comments[comments.length - 1].timestamp
-      // Sync to server (global lastSeen, single user)
+      // Sync to server (global lastSeen map in this prototype)
       fetch('/mc-api/automerge/last-seen', {
         method: 'POST',
         headers: withBearerAuthHeaders(API_TOKEN, { 'Content-Type': 'application/json' }),
