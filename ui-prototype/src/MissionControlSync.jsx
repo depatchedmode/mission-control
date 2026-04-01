@@ -1,8 +1,10 @@
-import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
+import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import { requestJson, withBearerAuthHeaders } from '../../lib/sync-client.js'
 import { activityTaskId } from '../../lib/activity-task-id.js'
+
+const REMARK_GFM_PLUGINS = [remarkGfm]
 
 // Global lastSeen map (current single-operator prototype; stored in the shared Automerge doc)
 const API_TOKEN = import.meta.env.VITE_MC_API_TOKEN || null
@@ -13,6 +15,45 @@ const PRIORITIES = [
   { value: 'p2', label: 'P2', color: '#eab308' },
   { value: 'p3', label: 'P3', color: '#666' },
 ]
+
+const BOARD_COLUMNS = [
+  { title: 'Backlog', status: 'backlog', filter: (t) => t.status === 'todo' || t.status === 'backlog' },
+  { title: 'Up Next', status: 'up-next', filter: (t) => t.status === 'up-next' },
+  { title: 'In Progress', status: 'in-progress', filter: (t) => t.status === 'in-progress', highlight: true },
+  { title: 'Review', status: 'review', filter: (t) => t.status === 'review' },
+  { title: 'Done', status: 'completed', filter: (t) => t.status === 'completed', collapsible: true, defaultCollapsed: true },
+]
+
+function sortTasks(taskList) {
+  return [...taskList].sort((a, b) => {
+    const pa = PRIORITIES.findIndex((p) => p.value === a.priority)
+    const pb = PRIORITIES.findIndex((p) => p.value === b.priority)
+    if (pa !== pb) return pa - pb
+    return (a.order || 0) - (b.order || 0)
+  })
+}
+
+function formatRelativeTime(ts) {
+  const d = new Date(ts)
+  const now = new Date()
+  const diff = now - d
+  if (diff < 60000) return 'just now'
+  if (diff < 3600000) return `${Math.floor(diff / 60000)}m ago`
+  if (diff < 86400000) return `${Math.floor(diff / 3600000)}h ago`
+  return d.toLocaleDateString()
+}
+
+async function requestWebSocketTicket() {
+  const payload = await requestJson('', '/mc-api/automerge/ws-ticket', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    token: API_TOKEN,
+  })
+  if (!payload?.ticket) {
+    throw new Error('WebSocket auth ticket response missing ticket')
+  }
+  return payload.ticket
+}
 
 export default function MissionControlSync() {
   const [doc, setDoc] = useState(null)
@@ -25,19 +66,17 @@ export default function MissionControlSync() {
   const [mobileActiveColumn, setMobileActiveColumn] = useState('in-progress')
   const [view, setView] = useState('board') // 'board' or 'activity'
   const wsRef = useRef(null)
-  
-  useEffect(() => {
-    connectToSyncServer()
-    return () => { if (wsRef.current) wsRef.current.close() }
-  }, [])
-  
-  useEffect(() => {
-    const handleEsc = (e) => { if (e.key === 'Escape') { setSelectedTask(null); setShowNewTask(false) } }
-    window.addEventListener('keydown', handleEsc)
-    return () => window.removeEventListener('keydown', handleEsc)
-  }, [])
-  
-  const connectToSyncServer = async () => {
+
+  const tasksByColumn = useMemo(() => {
+    const all = Object.values(doc?.tasks || {})
+    const out = {}
+    for (const col of BOARD_COLUMNS) {
+      out[col.status] = sortTasks(all.filter(col.filter))
+    }
+    return out
+  }, [doc])
+
+  const connectToSyncServer = useCallback(async () => {
     setLoading(true)
     if (wsRef.current) wsRef.current.close()
     try {
@@ -45,35 +84,51 @@ export default function MissionControlSync() {
       const ticketQuery = API_TOKEN ? `?ticket=${encodeURIComponent(await requestWebSocketTicket())}` : ''
       const ws = new WebSocket(`${wsProtocol}//${window.location.host}/mc-ws${ticketQuery}`)
       wsRef.current = ws
-      ws.onopen = () => { setConnected(true); setError(null) }
+      ws.onopen = () => {
+        setConnected(true)
+        setError(null)
+      }
       ws.onmessage = (event) => {
         const message = JSON.parse(event.data)
         if (message.type === 'document-state' || message.type === 'document-update') {
           setDoc(message.doc)
           setLoading(false)
-          // Update selected task if it changed
-          if (selectedTask && message.doc.tasks[selectedTask.id]) {
-            setSelectedTask(message.doc.tasks[selectedTask.id])
-          }
+          setSelectedTask((prev) => {
+            if (!prev) return prev
+            const updated = message.doc.tasks?.[prev.id]
+            return updated || prev
+          })
         }
       }
-      ws.onclose = () => { setConnected(false); setTimeout(connectToSyncServer, 3000) }
+      ws.onclose = () => {
+        setConnected(false)
+        setTimeout(connectToSyncServer, 3000)
+      }
       ws.onerror = () => setError('Connection failed')
-    } catch (error) { setError(error.message); setLoading(false) }
-  }
-
-  const requestWebSocketTicket = async () => {
-    const payload = await requestJson('', '/mc-api/automerge/ws-ticket', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      token: API_TOKEN
-    })
-    if (!payload?.ticket) {
-      throw new Error('WebSocket auth ticket response missing ticket')
+    } catch (err) {
+      setError(err.message)
+      setLoading(false)
     }
-    return payload.ticket
-  }
-  
+  }, [])
+
+  useEffect(() => {
+    connectToSyncServer()
+    return () => {
+      if (wsRef.current) wsRef.current.close()
+    }
+  }, [connectToSyncServer])
+
+  useEffect(() => {
+    function handleEsc(e) {
+      if (e.key === 'Escape') {
+        setSelectedTask(null)
+        setShowNewTask(false)
+      }
+    }
+    window.addEventListener('keydown', handleEsc)
+    return () => window.removeEventListener('keydown', handleEsc)
+  }, [])
+
   const sendChange = useCallback((change) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
       wsRef.current.send(JSON.stringify({ type: 'document-change', change, agent: 'depatched', timestamp: new Date().toISOString() }))
@@ -110,21 +165,9 @@ export default function MissionControlSync() {
   const tasks = Object.values(doc.tasks || {})
   const agents = Object.values(doc.agents || {})
   const comments = Object.values(doc.comments || {})
-  
-  const sortTasks = (taskList) => taskList.sort((a, b) => {
-    const pa = PRIORITIES.findIndex(p => p.value === a.priority)
-    const pb = PRIORITIES.findIndex(p => p.value === b.priority)
-    if (pa !== pb) return pa - pb
-    return (a.order || 0) - (b.order || 0)
-  })
-  
-  const backlogTasks = sortTasks(tasks.filter(t => t.status === 'todo' || t.status === 'backlog'))
-  const upNextTasks = sortTasks(tasks.filter(t => t.status === 'up-next'))
-  const inProgressTasks = sortTasks(tasks.filter(t => t.status === 'in-progress'))
-  const reviewTasks = sortTasks(tasks.filter(t => t.status === 'review'))
-  const completedTasks = sortTasks(tasks.filter(t => t.status === 'completed'))
-  
-  const getTaskComments = (taskId) => comments.filter(c => c.taskId === taskId).sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp))
+
+  const getTaskComments = (taskId) =>
+    comments.filter((c) => c.taskId === taskId).sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp))
   
   const getUnreadCount = (taskId) => {
     const taskComments = getTaskComments(taskId)
@@ -158,31 +201,36 @@ export default function MissionControlSync() {
       {view === 'board' ? (<>
       {/* Mobile column tabs */}
       <div className="mc-mobile-tabs">
-        {[
-          { status: 'backlog', title: 'Backlog', count: backlogTasks.length },
-          { status: 'up-next', title: 'Up Next', count: upNextTasks.length },
-          { status: 'in-progress', title: 'In Progress', count: inProgressTasks.length },
-          { status: 'review', title: 'Review', count: reviewTasks.length },
-          { status: 'completed', title: 'Done', count: completedTasks.length },
-        ].map(col => (
-          <button key={col.status} className={`mc-mobile-tab ${mobileActiveColumn === col.status ? 'active' : ''}`}
-            onClick={() => setMobileActiveColumn(col.status)}>
-            {col.title}<span className="tab-count">{col.count}</span>
+        {BOARD_COLUMNS.map((col) => (
+          <button
+            key={col.status}
+            className={`mc-mobile-tab ${mobileActiveColumn === col.status ? 'active' : ''}`}
+            onClick={() => setMobileActiveColumn(col.status)}
+          >
+            {col.title}
+            <span className="tab-count">{tasksByColumn[col.status].length}</span>
           </button>
         ))}
       </div>
-      
+
       <div className="mc-board">
-        <TaskColumn title="Backlog" status="backlog" tasks={backlogTasks} onSelect={setSelectedTask} 
-          onDragStart={setDraggedTask} onDrop={handleDrop} isDragging={!!draggedTask} getUnreadCount={getUnreadCount} mobileActive={mobileActiveColumn === 'backlog'} />
-        <TaskColumn title="Up Next" status="up-next" tasks={upNextTasks} onSelect={setSelectedTask}
-          onDragStart={setDraggedTask} onDrop={handleDrop} isDragging={!!draggedTask} getUnreadCount={getUnreadCount} mobileActive={mobileActiveColumn === 'up-next'} />
-        <TaskColumn title="In Progress" status="in-progress" tasks={inProgressTasks} highlight onSelect={setSelectedTask}
-          onDragStart={setDraggedTask} onDrop={handleDrop} isDragging={!!draggedTask} getUnreadCount={getUnreadCount} mobileActive={mobileActiveColumn === 'in-progress'} />
-        <TaskColumn title="Review" status="review" tasks={reviewTasks} onSelect={setSelectedTask}
-          onDragStart={setDraggedTask} onDrop={handleDrop} isDragging={!!draggedTask} getUnreadCount={getUnreadCount} mobileActive={mobileActiveColumn === 'review'} />
-        <TaskColumn title="Done" status="completed" tasks={completedTasks} onSelect={setSelectedTask}
-          onDragStart={setDraggedTask} onDrop={handleDrop} isDragging={!!draggedTask} getUnreadCount={getUnreadCount} collapsible defaultCollapsed mobileActive={mobileActiveColumn === 'completed'} />
+        {BOARD_COLUMNS.map((col) => (
+          <TaskColumn
+            key={col.status}
+            title={col.title}
+            status={col.status}
+            tasks={tasksByColumn[col.status]}
+            highlight={!!col.highlight}
+            onSelect={setSelectedTask}
+            onDragStart={setDraggedTask}
+            onDrop={handleDrop}
+            isDragging={!!draggedTask}
+            getUnreadCount={getUnreadCount}
+            collapsible={col.collapsible}
+            defaultCollapsed={col.defaultCollapsed}
+            mobileActive={mobileActiveColumn === col.status}
+          />
+        ))}
       </div>
       
       {/* Mobile FAB */}
@@ -350,10 +398,10 @@ function TaskDetailModal({ task, comments, agents, onClose, onUpdate, onComment,
   const handleCommentChange = (e) => {
     const val = e.target.value
     setCommentText(val)
-    
-    // Check for @ mentions
     const lastAt = val.lastIndexOf('@')
-    if (lastAt !== -1 && lastAt === val.length - 1 || (lastAt !== -1 && !val.substring(lastAt).includes(' '))) {
+    const inMentionToken =
+      lastAt !== -1 && (lastAt === val.length - 1 || !val.substring(lastAt).includes(' '))
+    if (inMentionToken) {
       setShowMentions(true)
       setMentionFilter(val.substring(lastAt + 1).toLowerCase())
     } else {
@@ -388,16 +436,8 @@ function TaskDetailModal({ task, comments, agents, onClose, onUpdate, onComment,
     onUpdate(task.id, { tags: (task.tags || []).filter(t => t !== tag) })
   }
   
-  const filteredAgents = agents.filter(a => a.name.toLowerCase().includes(mentionFilter))
-  
-  const formatTime = (ts) => {
-    const d = new Date(ts), now = new Date(), diff = now - d
-    if (diff < 60000) return 'just now'
-    if (diff < 3600000) return `${Math.floor(diff/60000)}m ago`
-    if (diff < 86400000) return `${Math.floor(diff/3600000)}h ago`
-    return d.toLocaleDateString()
-  }
-  
+  const filteredAgents = agents.filter((a) => a.name.toLowerCase().includes(mentionFilter))
+
   return (
     <div style={styles.modalOverlay} onClick={onClose}>
       <div className="mc-modal-full" style={styles.fullModal} onClick={e => e.stopPropagation()}>
@@ -444,22 +484,7 @@ function TaskDetailModal({ task, comments, agents, onClose, onUpdate, onComment,
           
           {task.description && (
             <div style={styles.descriptionSection}>
-              <Markdown remarkPlugins={[remarkGfm]} components={{
-                p: ({children}) => <p style={styles.mdP}>{children}</p>,
-                a: ({href, children}) => <a href={href} style={styles.mdLink} target="_blank" rel="noopener noreferrer">{children}</a>,
-                code: ({children}) => <code style={styles.mdCode}>{children}</code>,
-                pre: ({children}) => <pre style={styles.mdPre}>{children}</pre>,
-                ul: ({children}) => <ul style={styles.mdList}>{children}</ul>,
-                ol: ({children}) => <ol style={styles.mdList}>{children}</ol>,
-                li: ({children}) => <li style={styles.mdLi}>{children}</li>,
-                strong: ({children}) => <strong style={styles.mdStrong}>{children}</strong>,
-                table: ({children}) => <table style={styles.mdTable}>{children}</table>,
-                thead: ({children}) => <thead style={styles.mdThead}>{children}</thead>,
-                tbody: ({children}) => <tbody>{children}</tbody>,
-                tr: ({children}) => <tr style={styles.mdTr}>{children}</tr>,
-                th: ({children}) => <th style={styles.mdTh}>{children}</th>,
-                td: ({children}) => <td style={styles.mdTd}>{children}</td>,
-              }}>
+              <Markdown remarkPlugins={REMARK_GFM_PLUGINS} components={DETAIL_MARKDOWN_COMPONENTS}>
                 {task.description}
               </Markdown>
             </div>
@@ -469,7 +494,7 @@ function TaskDetailModal({ task, comments, agents, onClose, onUpdate, onComment,
             taskHistory={taskHistory}
             comments={comments}
             taskActivity={taskActivity}
-            formatTime={formatTime}
+            formatTime={formatRelativeTime}
             scrollToRecent={scrollToRecent}
             commentsContainerRef={commentsContainerRef}
             commentsEndRef={commentsEndRef}
@@ -539,12 +564,7 @@ function TaskHistory({ taskHistory, comments, taskActivity, formatTime, scrollTo
                   <span style={styles.commentTime}>{formatTime(entry.timestamp)}</span>
                 </div>
                 <div style={styles.commentBody}>
-                  <Markdown components={{
-                    p: ({children}) => <span>{children}</span>,
-                    a: ({href, children}) => <a href={href} target="_blank" rel="noopener noreferrer" style={{color: '#10b981'}}>{children}</a>,
-                    code: ({children}) => <code style={{background: '#1a1a1a', padding: '2px 4px', borderRadius: 3, fontSize: '0.9em'}}>{children}</code>,
-                    strong: ({children}) => <strong style={{color: '#fff'}}>{children}</strong>,
-                  }}>{entry.content || entry.text}</Markdown>
+                  <Markdown components={COMMENT_INLINE_MARKDOWN_COMPONENTS}>{entry.content || entry.text}</Markdown>
                 </div>
               </div>
             )
@@ -614,14 +634,13 @@ function TaskHistory({ taskHistory, comments, taskActivity, formatTime, scrollTo
 }
 
 function ActivityView({ doc, onSelectTask }) {
-  const [filters, setFilters] = React.useState({
-    commit: true, comment: true, status: true, task: true, branch: true, agent: true
+  const [filters, setFilters] = useState({
+    commit: true, comment: true, status: true, task: true, branch: true, agent: true,
   })
-  
-  const toggleFilter = (key) => setFilters(f => ({ ...f, [key]: !f[key] }))
-  
-  // Build a unified timeline from all sources
-  const timeline = React.useMemo(() => {
+
+  const toggleFilter = (key) => setFilters((f) => ({ ...f, [key]: !f[key] }))
+
+  const timeline = useMemo(() => {
     const events = []
     const commitHashes = new Set() // track commit hashes to deduplicate commit_linked activity
     
@@ -667,16 +686,8 @@ function ActivityView({ doc, onSelectTask }) {
   }, [doc])
   
   // Apply filters
-  const filtered = timeline.filter(e => filters[e._kind] !== false)
-  
-  const formatTime = (ts) => {
-    const d = new Date(ts), now = new Date(), diff = now - d
-    if (diff < 60000) return 'just now'
-    if (diff < 3600000) return `${Math.floor(diff/60000)}m ago`
-    if (diff < 86400000) return `${Math.floor(diff/3600000)}h ago`
-    return d.toLocaleDateString()
-  }
-  
+  const filtered = timeline.filter((e) => filters[e._kind] !== false)
+
   const filterButtons = [
     { key: 'commit', icon: '🔗', label: 'Commits' },
     { key: 'comment', icon: '💬', label: 'Comments' },
@@ -708,8 +719,12 @@ function ActivityView({ doc, onSelectTask }) {
         <div style={styles.activityList}>
           {/* TODO: virtualize with react-window if event count grows beyond hundreds */}
           {filtered.slice(0, 80).map((entry, i) => (
-            <TimelineEntry key={entry.id || `${entry.timestamp}-${i}`} entry={entry}
-              formatTime={formatTime} onSelectTask={onSelectTask} />
+            <TimelineEntry
+              key={entry.id || `${entry.timestamp}-${i}`}
+              entry={entry}
+              formatTime={formatRelativeTime}
+              onSelectTask={onSelectTask}
+            />
           ))}
           {filtered.length === 0 && (
             <div style={styles.emptyText}>No activity matches your filters</div>
@@ -919,6 +934,40 @@ const styles = {
   mentionDropdown: { position: 'absolute', bottom: '100%', left: 0, right: 0, background: '#111', border: '1px solid #333', borderRadius: 8, marginBottom: 4, maxHeight: 200, overflow: 'auto' },
   mentionItem: { padding: '10px 14px', cursor: 'pointer', fontSize: 14, color: '#e5e5e5' },
   mentionRole: { color: '#666', marginLeft: 8, fontSize: 12 },
+}
+
+const DETAIL_MARKDOWN_COMPONENTS = {
+  p: ({ children }) => <p style={styles.mdP}>{children}</p>,
+  a: ({ href, children }) => (
+    <a href={href} style={styles.mdLink} target="_blank" rel="noopener noreferrer">
+      {children}
+    </a>
+  ),
+  code: ({ children }) => <code style={styles.mdCode}>{children}</code>,
+  pre: ({ children }) => <pre style={styles.mdPre}>{children}</pre>,
+  ul: ({ children }) => <ul style={styles.mdList}>{children}</ul>,
+  ol: ({ children }) => <ol style={styles.mdList}>{children}</ol>,
+  li: ({ children }) => <li style={styles.mdLi}>{children}</li>,
+  strong: ({ children }) => <strong style={styles.mdStrong}>{children}</strong>,
+  table: ({ children }) => <table style={styles.mdTable}>{children}</table>,
+  thead: ({ children }) => <thead style={styles.mdThead}>{children}</thead>,
+  tbody: ({ children }) => <tbody>{children}</tbody>,
+  tr: ({ children }) => <tr style={styles.mdTr}>{children}</tr>,
+  th: ({ children }) => <th style={styles.mdTh}>{children}</th>,
+  td: ({ children }) => <td style={styles.mdTd}>{children}</td>,
+}
+
+const COMMENT_INLINE_MARKDOWN_COMPONENTS = {
+  p: ({ children }) => <span>{children}</span>,
+  a: ({ href, children }) => (
+    <a href={href} target="_blank" rel="noopener noreferrer" style={{ color: '#10b981' }}>
+      {children}
+    </a>
+  ),
+  code: ({ children }) => (
+    <code style={{ background: '#1a1a1a', padding: '2px 4px', borderRadius: 3, fontSize: '0.9em' }}>{children}</code>
+  ),
+  strong: ({ children }) => <strong style={{ color: '#fff' }}>{children}</strong>,
 }
 
 // Global styles
