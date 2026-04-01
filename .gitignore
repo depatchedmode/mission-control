@@ -6,3 +6,7 @@ node_modules/
 ui-prototype/node_modules/
 ui-prototype/dist/
 .env
+ecosystem.config.cjs
+ui-prototype/ecosystem.config.cjs
+ecosystem.config.cjs
+ui-prototype/ecosystem.config.cjs
