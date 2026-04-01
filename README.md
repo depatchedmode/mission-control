@@ -75,31 +75,42 @@ What ships in **this repository today** is a **hub-and-spoke** deployment: a **s
 
 ### Task Management
 ```bash
-mc tasks [--status <s>]           # List tasks
-mc show <task-id>                 # Show task details
-mc task create "title" [options]  # Create task
-   --priority <p0-p3>             # Set priority
-   --assignee <name>              # Assign to someone
-mc update <task-id> [options]     # Update task
-   --status <s>                   # todo/in-progress/completed
+mc tasks [--status <s>] [--assignee <name>]   # List tasks
+mc show <task-id>                             # Show task details
+mc task create "title" [options]              # Create task
+   --priority <p0-p3>                         # Set priority
+   --assignee <name>                          # Assign to someone
+   --tag <tag>                                # Optional tag
+mc update <task-id> [options]                 # Update task
+   --status <s>                               # todo/in-progress/completed
+   --assignee <name>                          # Reassign
+   --title "text"                             # Rename
+   --description "text"                       # Body
+   --priority <p0-p3>                         # Priority
+   --agent <name>                             # Actor (defaults to MC_AGENT or "unknown")
 ```
 
 ### Comments & Activity
 ```bash
 mc comment <task-id> "message"    # Add comment (use @name to mention)
 mc comments <task-id>             # List task comments
+mc comment-delete <comment-id>    # Delete a comment by ID
+mc mentions pending [--agent <name>]   # Pending @mentions (optional filter)
+mc mentions <agent>               # Same pool, filter by agent (positional)
 mc activity [--limit <n>]         # Activity feed
+mc agents list                    # List registered agents
 ```
 
 ### Patchwork Features
 ```bash
 mc timeline [options]             # Rich timeline view
+   --agent <name>                 # Filter by actor
    --task <id>                    # Filter by task
    --limit <n>                    # Limit entries
 mc diff <task-id>                 # Show task changes over time
 mc branch <task-id> <name>        # Create experimental branch
 mc branches <task-id>             # List branches
-mc merge <branch-id>              # Merge branch back
+mc merge <branch-task-id>         # Merge branch task back into parent
 ```
 
 ### Agent Trace (Commit Attribution)
@@ -108,6 +119,7 @@ mc commit -m "message"            # Commit with agent attribution
    --task <id>                    # Link to Mission Control task
 mc trace list [--limit <n>]       # List recent traced commits
 mc trace show <hash>              # Show trace details
+mc trace task <task-id>           # Commits linked to a task
 ```
 
 See [docs/AGENT-TRACE.md](docs/AGENT-TRACE.md) for full documentation.
@@ -143,10 +155,15 @@ MC_API_TOKEN="$MC_API_TOKEN" npm run daemon
 VITE_MC_API_TOKEN="$MC_API_TOKEN" npm run dev --prefix ui-prototype
 ```
 
+By default the sync server stores data under the **current working directory**. To pin a data root (for example a dedicated folder), set `MC_STORAGE_PATH` when starting the server and use the same layout described under **Data Storage** below.
+
 ## Data Storage
 
 ### Automerge Document
-Located at `.mission-control/` (binary CRDT data)
+Binary CRDT data lives under a `.mission-control/` directory.
+
+- **Default** (no `MC_STORAGE_PATH`): `./.mission-control/` in the directory from which you start the sync server, with the document handle in `./.mission-control-url`.
+- **With `MC_STORAGE_PATH` set:** `$MC_STORAGE_PATH/.mission-control/` for binary data, and `$MC_STORAGE_PATH/.mission-control/document-url` for the document handle (not `.mission-control-url` in the cwd).
 
 ```javascript
 {
@@ -160,7 +177,7 @@ Located at `.mission-control/` (binary CRDT data)
 ```
 
 ### Sync
-Document URL stored in `.mission-control-url`. The sync server defaults to HTTP `8004` and WebSocket `8005` and can be configured with environment variables.
+See **Automerge Document** above for where the document URL file lives (`.mission-control-url` by default, or `document-url` under `.mission-control` when using `MC_STORAGE_PATH`). The sync server defaults to HTTP `8004` and WebSocket `8005` and can be configured with environment variables.
 
 #### Security Configuration
 The sync server requires an API token by default.
@@ -183,6 +200,7 @@ Optional environment settings:
 - `MC_HTTP_PORT` (default `8004`)
 - `MC_WS_PORT` (default `8005`)
 - `MC_SYNC_SERVER` (CLI/daemon API base URL override, e.g. `http://127.0.0.1:9000`)
+- `MC_STORAGE_PATH` (optional directory; store uses `$MC_STORAGE_PATH/.mission-control` and nested `document-url` as above)
 - `MC_ALLOW_INSECURE_LOCAL=1` (disables auth; local testing only)
 
 For the Vite UI, set `VITE_MC_API_TOKEN` in `ui-prototype/.env.local`. The UI exchanges that token for a short-lived one-time WebSocket ticket via `/mc-api/automerge/ws-ticket`, so long-lived tokens are not placed in WS URLs.
@@ -194,7 +212,7 @@ Behavior notes:
 - Browser requests with an `Origin` header must match `MC_ALLOWED_ORIGINS`. Allowed preflight `OPTIONS` requests receive the same allowlisted CORS headers; disallowed origins are rejected with `403`.
 - Originless non-browser requests (for example CLI and daemon traffic) are allowed and still require auth unless `MC_ALLOW_INSECURE_LOCAL=1` is set.
 - CLI and daemon commands fail fast when the sync server is unreachable; they do not fall back to direct local-store access.
-- The sync server logs rejected auth/origin checks with a `[security]` prefix and keeps in-memory counters for HTTP and WebSocket rejections, which are exposed for integration tests and runtime diagnostics.
+- The sync server logs rejected auth/origin checks with a `[security]` prefix and keeps in-memory counters for HTTP and WebSocket rejections. Those counters are available on the server instance (used by integration tests and any embedder); they are **not** exposed as a public HTTP API.
 
 ## Development
 
@@ -214,11 +232,7 @@ npm run ui:build
 `GAP:`-prefixed suites under `test/` are reserved for intentionally failing roadmap/specification checks. They remain runnable through `npm run test:gaps`, but `npm test` excludes them by default.
 
 ### Sync Server
-```bash
-# Start sync server (runs on 8004/8005)
-export MC_API_TOKEN="$(openssl rand -hex 32)"
-MC_API_TOKEN="$MC_API_TOKEN" npm run sync
-```
+Same as [Quick Start](#quick-start): `MC_API_TOKEN="$MC_API_TOKEN" npm run sync` (HTTP `8004`, WebSocket `8005` by default). Run from the repo root (or set `MC_STORAGE_PATH`) so `.mission-control` lands where you expect.
 
 ## Implementation milestones (shipped)
 
