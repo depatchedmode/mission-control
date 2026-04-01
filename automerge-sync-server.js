@@ -583,13 +583,17 @@ class AutomergeSyncServer {
               // Detailed changes tracked in taskHistory, not here
               timestamp: new Date().toISOString()
             })
+            
+            // Record to taskHistory atomically (same change transaction)
+            if (!doc.taskHistory) doc.taskHistory = {}
+            if (!doc.taskHistory[taskId]) doc.taskHistory[taskId] = []
+            doc.taskHistory[taskId].push({
+              timestamp: new Date().toISOString(),
+              agent: agent || 'api',
+              changes
+            })
           }
         })
-        
-        // Record to taskHistory for Patchwork diff tracking
-        if (changes.length > 0) {
-          await this.store.recordTaskChange(taskId, changes, agent || 'api')
-        }
         
         this.broadcastDocumentUpdate()
         res.json({ success: true, taskId, changes })
