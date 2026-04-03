@@ -466,7 +466,7 @@ class AutomergeSyncServer {
           return res.status(404).json({ error: 'Not a git repository' })
         }
         
-        const trace = getTraceByCommit(gitRoot, commitHash)
+        const trace = getTraceByCommit(gitRoot, commitHash, { exact: true })
         if (!trace) {
           return res.status(404).json({ error: 'Trace not found for this commit' })
         }
