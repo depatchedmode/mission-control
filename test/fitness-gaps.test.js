@@ -5,7 +5,7 @@
  *
  * These tests describe the EXPECTED behavior based on the project's
  * positioning claims. They fail today, serving as a roadmap for
- * closing the gap between what Mission Control claims and what it does.
+ * closing the gap between what Gameplan claims and what it does.
  *
  * When a test starts passing, the corresponding issue has been fixed.
  *
@@ -77,7 +77,7 @@ function suppressAutomergeRepoFailureLogs() {
 // CBOR-encoded join/sync messages, but the server expects JSON —
 // so the handshake never completes and no CRDT sync occurs.
 //
-// When Mission Control adds true Automerge sync support, this
+// When Gameplan adds true Automerge sync support, this
 // test will start passing.
 // ─────────────────────────────────────────────────────────────────
 
@@ -113,7 +113,7 @@ describe('GAP: true CRDT sync via WebSocket', () => {
         const doc = handle?.doc()
 
         assert.ok(
-          handle?.isReady() && doc?.name === 'Mission Control',
+          handle?.isReady() && doc?.name === 'Gameplan',
           'Peer repo should resolve the server document URL via Automerge sync — FAILS because the WS endpoint still speaks JSON, not the CBOR-based Automerge sync protocol'
         )
       } finally {
@@ -132,7 +132,7 @@ describe('GAP: true CRDT sync via WebSocket', () => {
 // ─────────────────────────────────────────────────────────────────
 // GAP 2: End-to-end duplicate protection still depends on harness dedupe
 //
-// Mission Control now uses lease-based at-least-once delivery and emits
+// Gameplan now uses lease-based at-least-once delivery and emits
 // stable idempotency keys, but true duplicate suppression still depends
 // on the receiving harness honoring that key. This spec models the
 // downstream contract that a future harness should satisfy.

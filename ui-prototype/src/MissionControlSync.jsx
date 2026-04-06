@@ -6,10 +6,10 @@ import { activityTaskId } from '../../lib/activity-task-id.js'
 
 const REMARK_GFM_PLUGINS = [remarkGfm]
 const CURRENT_USER_STORAGE_KEY = 'mc-current-user'
-const WRITE_ACTOR = import.meta.env.VITE_MC_WRITE_ACTOR || 'depatched'
+const WRITE_ACTOR = import.meta.env.VITE_GP_WRITE_ACTOR || 'depatched'
 
 // Global lastSeen map (current single-operator prototype; stored in the shared Automerge doc)
-const API_TOKEN = import.meta.env.VITE_MC_API_TOKEN || null
+const API_TOKEN = import.meta.env.VITE_GP_API_TOKEN || null
 
 const PRIORITIES = [
   { value: 'p0', label: 'P0', color: '#ef4444' },
@@ -84,7 +84,7 @@ function isMentionPendingForAgent(mention, agent, nowMs = Date.now()) {
 }
 
 async function requestWebSocketTicket() {
-  const payload = await requestJson('', '/mc-api/automerge/ws-ticket', {
+  const payload = await requestJson('', '/gp-api/automerge/ws-ticket', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     token: API_TOKEN,
@@ -170,7 +170,7 @@ export default function MissionControlSync() {
     try {
       const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
       const ticketQuery = API_TOKEN ? `?ticket=${encodeURIComponent(await requestWebSocketTicket())}` : ''
-      const ws = new WebSocket(`${wsProtocol}//${window.location.host}/mc-ws${ticketQuery}`)
+      const ws = new WebSocket(`${wsProtocol}//${window.location.host}/gp-ws${ticketQuery}`)
       wsRef.current = ws
       ws.onopen = () => {
         setConnected(true)
@@ -296,7 +296,7 @@ export default function MissionControlSync() {
     try {
       const data = await requestJson(
         '',
-        `/mc-api/automerge/mentions/pending?agent=${encodeURIComponent(agent)}`,
+        `/gp-api/automerge/mentions/pending?agent=${encodeURIComponent(agent)}`,
         { headers: withBearerAuthHeaders(API_TOKEN) }
       )
       if (requestId !== pendingFetchIdRef.current || currentUserRef.current !== agent) return
@@ -383,7 +383,7 @@ export default function MissionControlSync() {
     const requestId = ++traceFetchRequestIdRef.current
     setTraceFetchError(null)
     try {
-      const data = await requestJson('', `/mc-api/automerge/trace/${encodeURIComponent(commitHash)}`, {
+      const data = await requestJson('', `/gp-api/automerge/trace/${encodeURIComponent(commitHash)}`, {
         token: API_TOKEN,
         signal: controller.signal,
       })
@@ -462,7 +462,7 @@ export default function MissionControlSync() {
   return (
     <div style={styles.container}>
       <header style={styles.header} className="mc-header">
-        <h1 style={styles.logo}>Mission Control</h1>
+        <h1 style={styles.logo}>Gameplan</h1>
         <div style={styles.headerMeta} className="mc-header-meta">
           <span style={styles.stat}>{tasks.length} tasks</span>
           <label style={styles.userPickerLabel}>
@@ -747,7 +747,7 @@ function TaskDetailModal({ task, comments, agents, onClose, onUpdate, onComment,
     if (comments.length > 0) {
       const latestTimestamp = comments[comments.length - 1].timestamp
       // Sync to server (global lastSeen map in this prototype)
-      fetch('/mc-api/automerge/last-seen', {
+      fetch('/gp-api/automerge/last-seen', {
         method: 'POST',
         headers: withBearerAuthHeaders(API_TOKEN, { 'Content-Type': 'application/json' }),
         body: JSON.stringify({ taskId: task.id, timestamp: latestTimestamp })

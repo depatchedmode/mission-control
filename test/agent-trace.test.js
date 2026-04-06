@@ -239,11 +239,11 @@ describe('createTrace', () => {
   });
   
   it('uses environment variables as fallback', () => {
-    const originalAgent = process.env.MC_AGENT;
-    const originalModel = process.env.MC_AGENT_MODEL;
+    const originalAgent = process.env.GP_AGENT;
+    const originalModel = process.env.GP_AGENT_MODEL;
     
-    process.env.MC_AGENT = 'env-agent';
-    process.env.MC_AGENT_MODEL = 'env-model';
+    process.env.GP_AGENT = 'env-agent';
+    process.env.GP_AGENT_MODEL = 'env-model';
     
     try {
       const { trace } = agentTrace.createTrace({
@@ -258,10 +258,10 @@ describe('createTrace', () => {
       assert.strictEqual(trace.agent.model, 'env-model');
     } finally {
       // Restore
-      if (originalAgent) process.env.MC_AGENT = originalAgent;
-      else delete process.env.MC_AGENT;
-      if (originalModel) process.env.MC_AGENT_MODEL = originalModel;
-      else delete process.env.MC_AGENT_MODEL;
+      if (originalAgent) process.env.GP_AGENT = originalAgent;
+      else delete process.env.GP_AGENT;
+      if (originalModel) process.env.GP_AGENT_MODEL = originalModel;
+      else delete process.env.GP_AGENT_MODEL;
     }
   });
 

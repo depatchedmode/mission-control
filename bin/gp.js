@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 /**
- * Mission Control CLI
+ * Gameplan CLI
  *
  * Current implementation (hub-and-spoke):
  * - automerge-sync-server.js is the HTTP/WebSocket hub
@@ -10,34 +10,34 @@
  * - External agent harnesses are expected to orchestrate mentions via this CLI
  *
  * Usage:
- *   mc comment <task-id> "message"
- *   mc comments <task-id>
- *   mc mentions pending [--agent <name>]
- *   mc activity [--limit <n>]
- *   mc agents list
- *   mc show <task-id>
- *   mc tasks
+ *   gp comment <task-id> "message"
+ *   gp comments <task-id>
+ *   gp mentions pending [--agent <name>]
+ *   gp activity [--limit <n>]
+ *   gp agents list
+ *   gp show <task-id>
+ *   gp tasks
  *   
  * Patchwork Features:
- *   mc timeline [--agent <name>] [--task <id>] [--limit <n>]
- *   mc diff <task-id>
- *   mc branch <task-id> <branch-name>
- *   mc branches <task-id>
- *   mc merge <branch-task-id>
+ *   gp timeline [--agent <name>] [--task <id>] [--limit <n>]
+ *   gp diff <task-id>
+ *   gp branch <task-id> <branch-name>
+ *   gp branches <task-id>
+ *   gp merge <branch-task-id>
  * 
  * Agent Trace:
- *   mc commit [git commit args]          Commit with agent attribution
- *   mc trace list [--limit <n>]          List recent traced commits
- *   mc trace show <commit-hash>          Show trace for a specific commit
- *   mc trace task <task-id>              Show commits linked to a task
+ *   gp commit [git commit args]          Commit with agent attribution
+ *   gp trace list [--limit <n>]          List recent traced commits
+ *   gp trace show <commit-hash>          Show trace for a specific commit
+ *   gp trace task <task-id>              Show commits linked to a task
  */
 
 import * as agentTrace from '../lib/agent-trace.js';
 import { SyncRequestError, requestJson } from '../lib/sync-client.js';
 import { activityTaskId } from '../lib/activity-task-id.js';
 
-const API_BASE = process.env.MC_SYNC_SERVER || `http://localhost:${process.env.MC_HTTP_PORT || '8004'}`;
-const API_TOKEN = process.env.MC_API_TOKEN || null;
+const API_BASE = process.env.GP_SYNC_SERVER || `http://localhost:${process.env.GP_HTTP_PORT || '8004'}`;
+const API_TOKEN = process.env.GP_API_TOKEN || null;
 const args = process.argv.slice(2);
 const command = args[0];
 const subcommand = args[1];
@@ -64,8 +64,8 @@ function isTransportFailure(error) {
 
 function printSyncRuntimeHint() {
   console.error(`   Sync server: ${API_BASE}`);
-  console.error('   Start the supported runtime with `npm run sync`, or make sure MC_SYNC_SERVER points to a reachable server.');
-  console.error('   If auth is enabled, use the same MC_API_TOKEN for the server and this command.');
+  console.error('   Start the supported runtime with `npm run sync`, or make sure GP_SYNC_SERVER points to a reachable server.');
+  console.error('   If auth is enabled, use the same GP_API_TOKEN for the server and this command.');
 }
 
 function printCommandError(prefix, error) {
@@ -172,97 +172,97 @@ async function ensureTaskLinkReady(taskId) {
 
 function usage() {
   console.log(`
-Mission Control CLI
+Gameplan CLI
 
 Usage:
-  mc comment <task-id> "message"           Add a comment (use @name to mention)
-  mc comments <task-id>                    List comments for a task (shows IDs)
-  mc comment-delete <comment-id>           Delete a comment by ID
-  mc mentions <agent>                      List pending @mentions for agent
-  mc mentions pending [--agent <name>] [--json]
+  gp comment <task-id> "message"           Add a comment (use @name to mention)
+  gp comments <task-id>                    List comments for a task (shows IDs)
+  gp comment-delete <comment-id>           Delete a comment by ID
+  gp mentions <agent>                      List pending @mentions for agent
+  gp mentions pending [--agent <name>] [--json]
                                            List pending @mentions
-  mc mentions claim <mention-id> [--json]
+  gp mentions claim <mention-id> [--json]
                                            Claim one pending mention lease
-  mc mentions claim-next --agent <name> [--json]
+  gp mentions claim-next --agent <name> [--json]
                                            Claim the next available mention
-  mc mentions ack <mention-id> --claim-token <token> [--json]
+  gp mentions ack <mention-id> --claim-token <token> [--json]
                                            Mark a claimed mention delivered
-  mc mentions release <mention-id> --claim-token <token> [--error <msg>] [--json]
+  gp mentions release <mention-id> --claim-token <token> [--error <msg>] [--json]
                                            Release a claim back to the pool
-  mc activity [--limit <n>]                Show activity feed
-  mc agents list                           List registered agents
-  mc show <task-id>                        Show task details
-  mc tasks [--status <s>] [--assignee <a>] List tasks
-  mc task create "title" [options]         Create a new task
+  gp activity [--limit <n>]                Show activity feed
+  gp agents list                           List registered agents
+  gp show <task-id>                        Show task details
+  gp tasks [--status <s>] [--assignee <a>] List tasks
+  gp task create "title" [options]         Create a new task
      --priority <p0-p3>                    Set priority (default: p2)
      --assignee <name>                     Assign to agent
      --tag <tag>                           Add a tag
 
 Patchwork Features:
-  mc timeline [options]                    Rich timeline view with context
+  gp timeline [options]                    Rich timeline view with context
      --agent <name>                        Filter by agent
      --task <id>                           Filter by task
      --limit <n>                           Limit entries (default: 20)
-  mc diff <task-id>                        Show task changes over time
-  mc update <task-id> [options]            Update task with history tracking
+  gp diff <task-id>                        Show task changes over time
+  gp update <task-id> [options]            Update task with history tracking
      --status <s>                          Set status (todo/in-progress/completed)
      --assignee <name>                     Set assignee
      --title "text"                        Set title
      --description "text"                  Set description
      --priority <p0-p3>                    Set priority
-  mc branch <task-id> <branch-name>        Create a task branch to experiment
-  mc branches <task-id>                    List branches of a task
-  mc merge <branch-task-id>                Merge branch back to parent
+  gp branch <task-id> <branch-name>        Create a task branch to experiment
+  gp branches <task-id>                    List branches of a task
+  gp merge <branch-task-id>                Merge branch back to parent
 
 Moves & Games:
-  mc move create "title" [options]         Create a move
+  gp move create "title" [options]         Create a move
      --branch <name>                       Git branch for this move
      --game <game-id>                      Link to a game
      --description "text"                  Description
-  mc moves [--status <s>] [--game <id>]    List moves
-  mc move show <move-id>                   Show move details
-  mc move update <move-id> [options]       Update a move
+  gp moves [--status <s>] [--game <id>]    List moves
+  gp move show <move-id>                   Show move details
+  gp move update <move-id> [options]       Update a move
      --status <s>                          proposed/active/completed/failed/abandoned
      --game <game-id>                      Link to a game (retroactive OK)
      --branch <name>                       Set git branch
      --title "text"                        Set title
      --description "text"                  Set description
-  mc game create "title" [options]         Create a game
+  gp game create "title" [options]         Create a game
      --endgame "goal description"          The goal state (required)
      --description "text"                  Description
-  mc games [--status <s>]                  List games
-  mc game show <game-id>                   Show game details with its moves
-  mc game update <game-id> [options]       Update a game
+  gp games [--status <s>]                  List games
+  gp game show <game-id>                   Show game details with its moves
+  gp game update <game-id> [options]       Update a game
      --status <s>                          active/won/abandoned/paused
      --endgame "text"                      Update endgame
      --title "text"                        Set title
      --description "text"                  Set description
 
 Agent Trace (commit attribution):
-  mc commit [git args]                     Commit with agent attribution trace
-     --task <id>                           Link commit to Mission Control task
+  gp commit [git args]                     Commit with agent attribution trace
+     --task <id>                           Link commit to Gameplan task
      --move <id>                           Link commit to a move
      (all other args passed to git commit)
-  mc trace list [--limit <n>]              List recent traced commits
-  mc trace show <commit-hash>              Show trace details for a commit
-  mc trace task <task-id>                   Show all commits linked to a task
+  gp trace list [--limit <n>]              List recent traced commits
+  gp trace show <commit-hash>              Show trace details for a commit
+  gp trace task <task-id>                   Show all commits linked to a task
 
 Environment:
-  MC_AGENT              Agent name (default: 'unknown')
-  MC_AGENT_MODEL        Model name for traces
-  MC_AGENT_SESSION_KEY  Session key for external harness context lookup
-  OPENCLAW_MODEL        Legacy alias for MC_AGENT_MODEL
-  OPENCLAW_SESSION_KEY  Legacy alias for MC_AGENT_SESSION_KEY
+  GP_AGENT              Agent name (default: 'unknown')
+  GP_AGENT_MODEL        Model name for traces
+  GP_AGENT_SESSION_KEY  Session key for external harness context lookup
+  OPENCLAW_MODEL        Legacy alias for GP_AGENT_MODEL
+  OPENCLAW_SESSION_KEY  Legacy alias for GP_AGENT_SESSION_KEY
 
 Examples:
-  MC_AGENT=gary mc comment clawd-pxdf "Starting work on this"
-  mc comment clawd-pxdf "@friday can you help with the API?"
-  mc mentions gary
-  mc mentions claim-next --agent friday --json
-  mc mentions ack mention-123 --claim-token token-abc --json
-  mc tasks --status in-progress --assignee gary
-  mc task create "Fix login bug" --priority p1 --assignee friday
-  mc timeline --agent friday --limit 10
+  GP_AGENT=gary mc comment clawd-pxdf "Starting work on this"
+  gp comment clawd-pxdf "@friday can you help with the API?"
+  gp mentions gary
+  gp mentions claim-next --agent friday --json
+  gp mentions ack mention-123 --claim-token token-abc --json
+  gp tasks --status in-progress --assignee gary
+  gp task create "Fix login bug" --priority p1 --assignee friday
+  gp timeline --agent friday --limit 10
 `);
 }
 
@@ -293,7 +293,7 @@ function hasFlag(name) {
 }
 
 function getDefaultAgent() {
-  return getArg('agent', process.env.MC_AGENT || 'unknown');
+  return getArg('agent', process.env.GP_AGENT || 'unknown');
 }
 
 function printJson(value) {
@@ -307,7 +307,7 @@ async function main() {
   }
 
   // ─────────────────────────────────────────
-  // mc comment <task-id> "message"
+  // gp comment <task-id> "message"
   // ─────────────────────────────────────────
   if (command === 'comment') {
       const posArgs = positionalArgs();
@@ -316,7 +316,7 @@ async function main() {
       const agent = getDefaultAgent();
       
       if (!taskId || !message) {
-        console.error('Usage: mc comment <task-id> "message" [--agent <name>]');
+        console.error('Usage: gp comment <task-id> "message" [--agent <name>]');
         process.exit(1);
       }
       
@@ -326,17 +326,17 @@ async function main() {
       const mentions = message.match(/@(\w+)/g) || [];
       if (mentions.length > 0) {
         console.log(`📬 Mentions created: ${mentions.join(', ')}`);
-        console.log('   (External agent harnesses should claim them via `mc mentions ...`)');
+        console.log('   (External agent harnesses should claim them via `gp mentions ...`)');
       }
     }
 
     // ─────────────────────────────────────────
-    // mc comments <task-id>
+    // gp comments <task-id>
     // ─────────────────────────────────────────
     else if (command === 'comments') {
       const taskId = args[1];
       if (!taskId) {
-        console.error('Usage: mc comments <task-id>');
+        console.error('Usage: gp comments <task-id>');
         process.exit(1);
       }
       
@@ -358,12 +358,12 @@ async function main() {
     }
 
     // ─────────────────────────────────────────
-    // mc comment-delete <comment-id>
+    // gp comment-delete <comment-id>
     // ─────────────────────────────────────────
     else if (command === 'comment-delete') {
       const commentId = args[1];
       if (!commentId) {
-        console.error('Usage: mc comment-delete <comment-id>');
+        console.error('Usage: gp comment-delete <comment-id>');
         process.exit(1);
       }
       
@@ -377,8 +377,8 @@ async function main() {
     }
 
     // ─────────────────────────────────────────
-    // mc mentions <agent>
-    // mc mentions pending [--agent <name>]
+    // gp mentions <agent>
+    // gp mentions pending [--agent <name>]
     // ─────────────────────────────────────────
     else if (command === 'mentions') {
       const jsonOutput = hasFlag('json');
@@ -386,7 +386,7 @@ async function main() {
       if (subcommand === 'claim') {
         const mentionId = args[2];
         if (!mentionId) {
-          console.error('Usage: mc mentions claim <mention-id> [--json]');
+          console.error('Usage: gp mentions claim <mention-id> [--json]');
           process.exit(1);
         }
 
@@ -408,7 +408,7 @@ async function main() {
       else if (subcommand === 'claim-next') {
         const agent = getArg('agent') || (args[2] && !args[2].startsWith('--') ? args[2] : null);
         if (!agent) {
-          console.error('Usage: mc mentions claim-next --agent <name> [--json]');
+          console.error('Usage: gp mentions claim-next --agent <name> [--json]');
           process.exit(1);
         }
 
@@ -434,7 +434,7 @@ async function main() {
         const mentionId = args[2];
         const claimToken = getArg('claim-token');
         if (!mentionId || !claimToken) {
-          console.error('Usage: mc mentions ack <mention-id> --claim-token <token> [--json]');
+          console.error('Usage: gp mentions ack <mention-id> --claim-token <token> [--json]');
           process.exit(1);
         }
 
@@ -457,7 +457,7 @@ async function main() {
         const releaseError = getArg('error');
         if (!mentionId || !claimToken) {
           console.error(
-            'Usage: mc mentions release <mention-id> --claim-token <token> [--error <msg>] [--json]'
+            'Usage: gp mentions release <mention-id> --claim-token <token> [--error <msg>] [--json]'
           );
           process.exit(1);
         }
@@ -480,7 +480,7 @@ async function main() {
         if (subcommand === 'pending') {
           agent = getArg('agent');
         } else if (subcommand && !subcommand.startsWith('--')) {
-          // New syntax: mc mentions <agent>
+          // New syntax: gp mentions <agent>
           agent = subcommand;
         } else {
           agent = getArg('agent');
@@ -510,7 +510,7 @@ async function main() {
     }
 
     // ─────────────────────────────────────────
-    // mc activity
+    // gp activity
     // ─────────────────────────────────────────
     else if (command === 'activity') {
       const limit = parseInt(getArg('limit', '20'));
@@ -534,7 +534,7 @@ async function main() {
     }
 
     // ─────────────────────────────────────────
-    // mc agents list
+    // gp agents list
     // ─────────────────────────────────────────
     else if (command === 'agents') {
       if (subcommand === 'list' || !subcommand) {
@@ -553,18 +553,18 @@ async function main() {
         }
       }
       else {
-        console.error('Usage: mc agents list');
+        console.error('Usage: gp agents list');
         process.exit(1);
       }
     }
 
     // ─────────────────────────────────────────
-    // mc show <task-id>
+    // gp show <task-id>
     // ─────────────────────────────────────────
     else if (command === 'show') {
       const taskId = args[1];
       if (!taskId) {
-        console.error('Usage: mc show <task-id>');
+        console.error('Usage: gp show <task-id>');
         process.exit(1);
       }
       
@@ -601,7 +601,7 @@ async function main() {
     }
 
     // ─────────────────────────────────────────
-    // mc tasks [--status <s>] [--assignee <a>]
+    // gp tasks [--status <s>] [--assignee <a>]
     // ─────────────────────────────────────────
     else if (command === 'tasks') {
       const status = getArg('status');
@@ -656,7 +656,7 @@ async function main() {
     }
 
     // ─────────────────────────────────────────
-    // mc timeline [--agent <name>] [--task <id>] [--limit <n>]
+    // gp timeline [--agent <name>] [--task <id>] [--limit <n>]
     // ─────────────────────────────────────────
     else if (command === 'timeline') {
       const agent = getArg('agent');
@@ -724,12 +724,12 @@ async function main() {
     }
 
     // ─────────────────────────────────────────
-    // mc diff <task-id>
+    // gp diff <task-id>
     // ─────────────────────────────────────────
     else if (command === 'diff') {
       const taskId = args[1];
       if (!taskId) {
-        console.error('Usage: mc diff <task-id>');
+        console.error('Usage: gp diff <task-id>');
         process.exit(1);
       }
       
@@ -792,14 +792,14 @@ async function main() {
     }
 
     // ─────────────────────────────────────────
-    // mc update <task-id> [--status <s>] [--assignee <name>] [--title "text"] [--description "text"] [--priority <p>]
+    // gp update <task-id> [--status <s>] [--assignee <name>] [--title "text"] [--description "text"] [--priority <p>]
     // ─────────────────────────────────────────
     else if (command === 'update') {
       const taskId = args[1];
       const agent = getDefaultAgent();
       
       if (!taskId) {
-        console.error('Usage: mc update <task-id> [--status <s>] [--assignee <name>] [--title "text"] [--description "text"] [--priority <p>]');
+        console.error('Usage: gp update <task-id> [--status <s>] [--assignee <name>] [--title "text"] [--description "text"] [--priority <p>]');
         process.exit(1);
       }
       
@@ -834,7 +834,7 @@ async function main() {
     }
 
     // ─────────────────────────────────────────
-    // mc branch <task-id> <branch-name>
+    // gp branch <task-id> <branch-name>
     // ─────────────────────────────────────────
     else if (command === 'branch') {
       const taskId = args[1];
@@ -842,7 +842,7 @@ async function main() {
       const agent = getDefaultAgent();
       
       if (!taskId || !branchName) {
-        console.error('Usage: mc branch <task-id> <branch-name>');
+        console.error('Usage: gp branch <task-id> <branch-name>');
         process.exit(1);
       }
       
@@ -853,7 +853,7 @@ async function main() {
           console.log(`🌿 Branch created: ${result.branchId}`);
           console.log(`   Parent: ${taskId}`);
           console.log(`   Name: ${branchName}`);
-          console.log(`\n   Work on the branch, then merge with: mc merge ${result.branchId}`);
+          console.log(`\n   Work on the branch, then merge with: gp merge ${result.branchId}`);
         }
       } catch (e) {
         printCommandError('❌ Failed to create branch', e);
@@ -862,12 +862,12 @@ async function main() {
     }
 
     // ─────────────────────────────────────────
-    // mc branches <task-id>
+    // gp branches <task-id>
     // ─────────────────────────────────────────
     else if (command === 'branches') {
       const taskId = args[1];
       if (!taskId) {
-        console.error('Usage: mc branches <task-id>');
+        console.error('Usage: gp branches <task-id>');
         process.exit(1);
       }
       
@@ -896,14 +896,14 @@ async function main() {
     }
 
     // ─────────────────────────────────────────
-    // mc merge <branch-task-id>
+    // gp merge <branch-task-id>
     // ─────────────────────────────────────────
     else if (command === 'merge') {
       const branchId = args[1];
       const agent = getDefaultAgent();
       
       if (!branchId) {
-        console.error('Usage: mc merge <branch-task-id>');
+        console.error('Usage: gp merge <branch-task-id>');
         process.exit(1);
       }
       
@@ -919,7 +919,7 @@ async function main() {
     }
 
     // ─────────────────────────────────────────
-    // mc task create "title" [options]
+    // gp task create "title" [options]
     // ─────────────────────────────────────────
     else if (command === 'task' && subcommand === 'create') {
       const title = args[2];
@@ -930,7 +930,7 @@ async function main() {
       const agent = getDefaultAgent();
       
       if (!title) {
-        console.error('Usage: mc task create "title" [--priority p0-p3] [--assignee name] [--tag tag]');
+        console.error('Usage: gp task create "title" [--priority p0-p3] [--assignee name] [--tag tag]');
         process.exit(1);
       }
       
@@ -948,17 +948,17 @@ async function main() {
     }
 
     // ─────────────────────────────────────────
-    // mc move create "title" [options]
+    // gp move create "title" [options]
     // ─────────────────────────────────────────
     else if (command === 'move' && subcommand === 'create') {
       const title = args[2];
       const description = getArg('description', '');
       const branch = getArg('branch');
       const gameId = getArg('game');
-      const agent = getArg('agent', process.env.MC_AGENT || 'unknown');
+      const agent = getArg('agent', process.env.GP_AGENT || 'unknown');
 
       if (!title) {
-        console.error('Usage: mc move create "title" [--branch <name>] [--game <game-id>] [--description "text"]');
+        console.error('Usage: gp move create "title" [--branch <name>] [--game <game-id>] [--description "text"]');
         process.exit(1);
       }
 
@@ -975,12 +975,12 @@ async function main() {
     }
 
     // ─────────────────────────────────────────
-    // mc move show <move-id>
+    // gp move show <move-id>
     // ─────────────────────────────────────────
     else if (command === 'move' && subcommand === 'show') {
       const moveId = args[2];
       if (!moveId) {
-        console.error('Usage: mc move show <move-id>');
+        console.error('Usage: gp move show <move-id>');
         process.exit(1);
       }
 
@@ -1006,14 +1006,14 @@ async function main() {
     }
 
     // ─────────────────────────────────────────
-    // mc move update <move-id> [options]
+    // gp move update <move-id> [options]
     // ─────────────────────────────────────────
     else if (command === 'move' && subcommand === 'update') {
       const moveId = args[2];
-      const agent = getArg('agent', process.env.MC_AGENT || 'unknown');
+      const agent = getArg('agent', process.env.GP_AGENT || 'unknown');
 
       if (!moveId) {
-        console.error('Usage: mc move update <move-id> [--status <s>] [--game <id>] [--branch <name>] [--title "text"] [--description "text"]');
+        console.error('Usage: gp move update <move-id> [--status <s>] [--game <id>] [--branch <name>] [--title "text"] [--description "text"]');
         process.exit(1);
       }
 
@@ -1048,7 +1048,7 @@ async function main() {
     }
 
     // ─────────────────────────────────────────
-    // mc moves [--status <s>] [--game <id>] [--agent <name>]
+    // gp moves [--status <s>] [--game <id>] [--agent <name>]
     // ─────────────────────────────────────────
     else if (command === 'moves') {
       const status = getArg('status');
@@ -1098,16 +1098,16 @@ async function main() {
     }
 
     // ─────────────────────────────────────────
-    // mc game create "title" [options]
+    // gp game create "title" [options]
     // ─────────────────────────────────────────
     else if (command === 'game' && subcommand === 'create') {
       const title = args[2];
       const endgame = getArg('endgame', '');
       const description = getArg('description', '');
-      const agent = getArg('agent', process.env.MC_AGENT || 'unknown');
+      const agent = getArg('agent', process.env.GP_AGENT || 'unknown');
 
       if (!title) {
-        console.error('Usage: mc game create "title" --endgame "goal description" [--description "text"]');
+        console.error('Usage: gp game create "title" --endgame "goal description" [--description "text"]');
         process.exit(1);
       }
 
@@ -1128,12 +1128,12 @@ async function main() {
     }
 
     // ─────────────────────────────────────────
-    // mc game show <game-id>
+    // gp game show <game-id>
     // ─────────────────────────────────────────
     else if (command === 'game' && subcommand === 'show') {
       const gameId = args[2];
       if (!gameId) {
-        console.error('Usage: mc game show <game-id>');
+        console.error('Usage: gp game show <game-id>');
         process.exit(1);
       }
 
@@ -1176,14 +1176,14 @@ async function main() {
     }
 
     // ─────────────────────────────────────────
-    // mc game update <game-id> [options]
+    // gp game update <game-id> [options]
     // ─────────────────────────────────────────
     else if (command === 'game' && subcommand === 'update') {
       const gameId = args[2];
-      const agent = getArg('agent', process.env.MC_AGENT || 'unknown');
+      const agent = getArg('agent', process.env.GP_AGENT || 'unknown');
 
       if (!gameId) {
-        console.error('Usage: mc game update <game-id> [--status <s>] [--endgame "text"] [--title "text"] [--description "text"]');
+        console.error('Usage: gp game update <game-id> [--status <s>] [--endgame "text"] [--title "text"] [--description "text"]');
         process.exit(1);
       }
 
@@ -1216,7 +1216,7 @@ async function main() {
     }
 
     // ─────────────────────────────────────────
-    // mc games [--status <s>]
+    // gp games [--status <s>]
     // ─────────────────────────────────────────
     else if (command === 'games') {
       const status = getArg('status');
@@ -1254,7 +1254,7 @@ async function main() {
     }
 
     // ─────────────────────────────────────────
-    // mc commit [git commit args]
+    // gp commit [git commit args]
     // Wrapper around git commit with agent attribution
     // ─────────────────────────────────────────
     else if (command === 'commit') {
@@ -1271,11 +1271,11 @@ async function main() {
       const agent = getDefaultAgent();
       const model = getArg(
         'model',
-        process.env.MC_AGENT_MODEL || process.env.OPENCLAW_MODEL || null
+        process.env.GP_AGENT_MODEL || process.env.OPENCLAW_MODEL || null
       );
       const sessionKey = getArg(
         'session',
-        process.env.MC_AGENT_SESSION_KEY || process.env.OPENCLAW_SESSION_KEY || null
+        process.env.GP_AGENT_SESSION_KEY || process.env.OPENCLAW_SESSION_KEY || null
       );
 
       if (taskId) {
@@ -1380,7 +1380,7 @@ async function main() {
           });
           console.log(`   📎 Linked to Patchwork timeline`);
         } catch (err) {
-          console.error(`⚠️  Commit created, but Mission Control was not updated: ${err.message}`);
+          console.error(`⚠️  Commit created, but Gameplan was not updated: ${err.message}`);
           if (isTransportFailure(err)) {
             printSyncRuntimeHint();
           }
@@ -1389,7 +1389,7 @@ async function main() {
     }
 
     // ─────────────────────────────────────────
-    // mc trace list [--limit <n>]
+    // gp trace list [--limit <n>]
     // ─────────────────────────────────────────
     else if (command === 'trace' && subcommand === 'list') {
       const repoPath = agentTrace.findGitRoot();
@@ -1403,7 +1403,7 @@ async function main() {
       const traces = agentTrace.listTraces(repoPath, { limit });
       
       if (traces.length === 0) {
-        console.log('No traces found. Use `mc commit` to create attributed commits.');
+        console.log('No traces found. Use `gp commit` to create attributed commits.');
       } else {
         console.log(`\n📋 Recent traced commits (${traces.length}):\n`);
         
@@ -1423,13 +1423,13 @@ async function main() {
     }
 
     // ─────────────────────────────────────────
-    // mc trace show <commit-hash>
+    // gp trace show <commit-hash>
     // ─────────────────────────────────────────
     else if (command === 'trace' && subcommand === 'show') {
       const commitHash = args[2];
       
       if (!commitHash) {
-        console.error('Usage: mc trace show <commit-hash>');
+        console.error('Usage: gp trace show <commit-hash>');
         process.exit(1);
       }
       
@@ -1444,7 +1444,7 @@ async function main() {
       
       if (!trace) {
         console.log(`No trace found for commit ${commitHash}`);
-        console.log('(Only commits made with `mc commit` have traces)');
+        console.log('(Only commits made with `gp commit` have traces)');
         process.exit(1);
       }
       
@@ -1466,14 +1466,14 @@ async function main() {
     }
 
     // ─────────────────────────────────────────
-    // mc trace task <task-id>
+    // gp trace task <task-id>
     // Show all commits linked to a task
     // ─────────────────────────────────────────
     else if (command === 'trace' && subcommand === 'task') {
       const taskId = args[2];
       
       if (!taskId) {
-        console.error('Usage: mc trace task <task-id>');
+        console.error('Usage: gp trace task <task-id>');
         process.exit(1);
       }
       
@@ -1483,7 +1483,7 @@ async function main() {
       
       if (history.length === 0) {
         console.log(`No commits linked to task ${taskId}`);
-        console.log('Use `mc commit --task <id>` to link commits.');
+        console.log('Use `gp commit --task <id>` to link commits.');
       } else {
         const task = doc.tasks?.[taskId];
         const title = task ? task.title : taskId;

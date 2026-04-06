@@ -129,7 +129,7 @@ async function expectWebSocketOpen(url, options = {}) {
 it('requires an API token unless insecure local mode is enabled', () => {
   assert.throws(
     () => withTempServer({ apiToken: '', allowInsecureLocal: false }, () => {}),
-    /MC_API_TOKEN is required/
+    /GP_API_TOKEN is required/
   )
 
   assert.doesNotThrow(() => withTempServer({ apiToken: '', allowInsecureLocal: true }, () => {}))

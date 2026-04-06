@@ -14,7 +14,7 @@ import { noopLogger } from '../support/resources.js'
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
-const CLI_PATH = join(__dirname, '..', 'bin', 'mc.js')
+const CLI_PATH = join(__dirname, '..', 'bin', 'gp.js')
 const tempDirs = []
 const stubServers = []
 
@@ -26,8 +26,8 @@ function createTempDir(prefix = 'mc-cli-test-') {
 
 function storePaths(cwd) {
   return {
-    storagePath: join(cwd, '.mission-control'),
-    urlFile: join(cwd, '.mission-control-url'),
+    storagePath: join(cwd, '.gameplan'),
+    urlFile: join(cwd, '.gameplan-url'),
     usePersistedUrl: true,
     logger: noopLogger,
   }
@@ -129,7 +129,7 @@ function runCli(cwd, args, env = {}) {
       cwd,
       env: {
         ...process.env,
-        MC_API_TOKEN: '',
+        GP_API_TOKEN: '',
         ...env,
       },
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -172,7 +172,7 @@ afterEach(async () => {
   }
 })
 
-describe('mc CLI supported runtime enforcement', () => {
+describe('gp CLI supported runtime enforcement', () => {
   it('does not fall back to the local store for reachable server HTTP errors on read commands', async () => {
     const cwd = createTempDir()
     await seedTaskStore(cwd)
@@ -185,7 +185,7 @@ describe('mc CLI supported runtime enforcement', () => {
 
     for (const testCase of cases) {
       const baseUrl = await startStubServer(testCase.statusCode, testCase.message)
-      const result = await runCli(cwd, ['tasks'], { MC_SYNC_SERVER: baseUrl })
+      const result = await runCli(cwd, ['tasks'], { GP_SYNC_SERVER: baseUrl })
 
       assert.notEqual(result.status, 0, `Expected non-zero exit for HTTP ${testCase.statusCode}`)
       assert.match(result.stderr, new RegExp(testCase.message))
@@ -199,7 +199,7 @@ describe('mc CLI supported runtime enforcement', () => {
     const baseUrl = await startStubServer(401, 'Unauthorized')
 
     const result = await runCli(cwd, ['comment', 'local-task-1', 'blocked comment'], {
-      MC_SYNC_SERVER: baseUrl,
+      GP_SYNC_SERVER: baseUrl,
     })
 
     assert.notEqual(result.status, 0)
@@ -215,13 +215,13 @@ describe('mc CLI supported runtime enforcement', () => {
     const unusedPort = await reserveUnusedPort()
 
     const result = await runCli(cwd, ['tasks'], {
-      MC_SYNC_SERVER: `http://127.0.0.1:${unusedPort}`,
+      GP_SYNC_SERVER: `http://127.0.0.1:${unusedPort}`,
     })
 
     assert.notEqual(result.status, 0)
     assert.match(result.stderr, /Could not reach sync server/)
     assert.match(result.stderr, /npm run sync/)
-    assert.match(result.stderr, /MC_API_TOKEN/)
+    assert.match(result.stderr, /GP_API_TOKEN/)
     assert.doesNotMatch(result.stdout, /Local fallback task/)
   })
 
@@ -231,14 +231,14 @@ describe('mc CLI supported runtime enforcement', () => {
     const unusedPort = await reserveUnusedPort()
 
     const result = await runCli(cwd, ['comment', 'local-task-1', 'offline comment'], {
-      MC_SYNC_SERVER: `http://127.0.0.1:${unusedPort}`,
-      MC_AGENT: 'gary',
+      GP_SYNC_SERVER: `http://127.0.0.1:${unusedPort}`,
+      GP_AGENT: 'gary',
     })
 
     assert.notEqual(result.status, 0)
     assert.match(result.stderr, /Could not reach sync server/)
     assert.match(result.stderr, /npm run sync/)
-    assert.match(result.stderr, /MC_API_TOKEN/)
+    assert.match(result.stderr, /GP_API_TOKEN/)
 
     const doc = await readStore(cwd)
     const comments = Object.values(doc.comments || {})
@@ -251,8 +251,8 @@ describe('mc CLI supported runtime enforcement', () => {
 
     const before = gitCommitCount(cwd)
     const result = await runCli(cwd, ['commit', '--task', 'task-123', '-m', 'blocked task link'], {
-      MC_SYNC_SERVER: `http://127.0.0.1:${unusedPort}`,
-      MC_AGENT: 'gary',
+      GP_SYNC_SERVER: `http://127.0.0.1:${unusedPort}`,
+      GP_AGENT: 'gary',
     })
 
     assert.notEqual(result.status, 0)
@@ -277,8 +277,8 @@ describe('mc CLI supported runtime enforcement', () => {
 
     const before = gitCommitCount(cwd)
     const result = await runCli(cwd, ['commit', '--task', 'task-404', '-m', 'missing task'], {
-      MC_SYNC_SERVER: baseUrl,
-      MC_AGENT: 'gary',
+      GP_SYNC_SERVER: baseUrl,
+      GP_AGENT: 'gary',
     })
 
     assert.notEqual(result.status, 0)
@@ -325,10 +325,10 @@ describe('mc CLI supported runtime enforcement', () => {
 
     const before = gitCommitCount(cwd)
     const result = await runCli(cwd, ['commit', '--task', 'task-123', '-m', 'happy path commit'], {
-      MC_SYNC_SERVER: baseUrl,
-      MC_AGENT: 'gary',
-      MC_AGENT_MODEL: 'gpt-5.4',
-      MC_AGENT_SESSION_KEY: 'session-123',
+      GP_SYNC_SERVER: baseUrl,
+      GP_AGENT: 'gary',
+      GP_AGENT_MODEL: 'gpt-5.4',
+      GP_AGENT_SESSION_KEY: 'session-123',
     })
 
     assert.equal(result.status, 0)
@@ -381,12 +381,12 @@ describe('mc CLI supported runtime enforcement', () => {
 
     const before = gitCommitCount(cwd)
     const result = await runCli(cwd, ['commit', '--task', 'task-123', '-m', 'commit link fails'], {
-      MC_SYNC_SERVER: baseUrl,
-      MC_AGENT: 'gary',
+      GP_SYNC_SERVER: baseUrl,
+      GP_AGENT: 'gary',
     })
 
     assert.equal(result.status, 0)
-    assert.match(result.stderr, /Mission Control was not updated/)
+    assert.match(result.stderr, /Gameplan was not updated/)
     assert.match(result.stderr, /Link write failed/)
     assert.equal(gitCommitCount(cwd), before + 1)
   })

@@ -1,4 +1,4 @@
-# Mission Control
+# Gameplan
 
 Local-first task tracking and coordination for humans and agents, built on **Automerge CRDTs** (tasks, comments, mentions, activity, timeline / patchwork, and optional git commit attribution).
 
@@ -36,7 +36,7 @@ What ships in **this repository today** is a **hub-and-spoke** deployment: a **s
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
-│                        MISSION CONTROL                                │
+│                        GAMEPLAN                                │
 │   Activity Feed · Task Board · Comments · Timeline · Patchwork       │
 └──────────────────────────────────────────────────────────────────────┘
                                 │
@@ -49,7 +49,7 @@ What ships in **this repository today** is a **hub-and-spoke** deployment: a **s
               ┌─────────────────┼─────────────────┐
               ▼                 ▼                 ▼
         ┌─────────┐      ┌───────────┐     ┌──────────┐
-        │ mc CLI  │      │ Sync Srv  │     │ UI Dev   │
+        │ gp CLI  │      │ Sync Srv  │     │ UI Dev   │
         └─────────┘      └───────────┘     └──────────┘
 ```
 
@@ -57,7 +57,7 @@ What ships in **this repository today** is a **hub-and-spoke** deployment: a **s
 
 | Component | Location | Purpose |
 |-----------|----------|---------|
-| **mc CLI** | `bin/mc.js` | Primary interface for task management (HTTP client to sync server) |
+| **gp CLI** | `bin/gp.js` | Primary interface for task management (HTTP client to sync server) |
 | **Automerge Store** | `lib/automerge-store.js` | Persistence + CRDT document logic (used by the sync server) |
 | **Sync Server** | `automerge-sync-server.js` | HTTP + WebSocket **hub** for the current deployment |
 | **UI Dev Client** | `ui-prototype/src/MissionControlSync.jsx` | Supported **development** UI client |
@@ -65,8 +65,8 @@ What ships in **this repository today** is a **hub-and-spoke** deployment: a **s
 ### Current supported runtime
 
 1. Start `automerge-sync-server.js` (HTTP + WebSocket).
-2. Point the CLI and any external agent harnesses at that server (`MC_SYNC_SERVER` or `MC_HTTP_PORT`).
-3. Run the UI through the Vite dev server proxy (`/mc-api` + `/mc-ws`).
+2. Point the CLI and any external agent harnesses at that server (`GP_SYNC_SERVER` or `GP_HTTP_PORT`).
+3. Run the UI through the Vite dev server proxy (`/gp-api` + `/gp-ws`).
 
 **Note:** Anything that bypasses the sync server—including **direct `AutomergeStore` access from CLI workflows**—is **not** a supported runtime path for the shipped CLI.
 
@@ -74,120 +74,120 @@ What ships in **this repository today** is a **hub-and-spoke** deployment: a **s
 
 ### Task Management
 ```bash
-mc tasks [--status <s>] [--assignee <name>]   # List tasks
-mc show <task-id>                             # Show task details
-mc task create "title" [options]              # Create task
+gp tasks [--status <s>] [--assignee <name>]   # List tasks
+gp show <task-id>                             # Show task details
+gp task create "title" [options]              # Create task
    --priority <p0-p3>                         # Set priority
    --assignee <name>                          # Assign to someone
    --tag <tag>                                # Optional tag
-mc update <task-id> [options]                 # Update task
+gp update <task-id> [options]                 # Update task
    --status <s>                               # todo/in-progress/completed
    --assignee <name>                          # Reassign
    --title "text"                             # Rename
    --description "text"                       # Body
    --priority <p0-p3>                         # Priority
-   --agent <name>                             # Actor (defaults to MC_AGENT or "unknown")
+   --agent <name>                             # Actor (defaults to GP_AGENT or "unknown")
 ```
 
 ### Comments & Activity
 ```bash
-mc comment <task-id> "message"    # Add comment (use @name to mention)
-mc comments <task-id>             # List task comments
-mc comment-delete <comment-id>    # Delete a comment by ID
-mc mentions pending [--agent <name>] [--json]         # Pending @mentions
-mc mentions <agent>               # Same pool, filter by agent (positional)
-mc mentions claim <mention-id> [--json]               # Claim a mention lease
-mc mentions claim-next --agent <name> [--json]        # Claim the next mention
-mc mentions ack <mention-id> --claim-token <token>    # Mark delivered
-mc mentions release <mention-id> --claim-token <token> [--error <msg>] [--json]
-mc activity [--limit <n>]         # Activity feed
-mc agents list                    # List registered agents
+gp comment <task-id> "message"    # Add comment (use @name to mention)
+gp comments <task-id>             # List task comments
+gp comment-delete <comment-id>    # Delete a comment by ID
+gp mentions pending [--agent <name>] [--json]         # Pending @mentions
+gp mentions <agent>               # Same pool, filter by agent (positional)
+gp mentions claim <mention-id> [--json]               # Claim a mention lease
+gp mentions claim-next --agent <name> [--json]        # Claim the next mention
+gp mentions ack <mention-id> --claim-token <token>    # Mark delivered
+gp mentions release <mention-id> --claim-token <token> [--error <msg>] [--json]
+gp activity [--limit <n>]         # Activity feed
+gp agents list                    # List registered agents
 ```
 
 ### Patchwork Features
 ```bash
-mc timeline [options]             # Rich timeline view
+gp timeline [options]             # Rich timeline view
    --agent <name>                 # Filter by actor
    --task <id>                    # Filter by task
    --limit <n>                    # Limit entries
-mc diff <task-id>                 # Show task changes over time
-mc branch <task-id> <name>        # Create experimental branch
-mc branches <task-id>             # List branches
-mc merge <branch-task-id>         # Merge branch task back into parent
+gp diff <task-id>                 # Show task changes over time
+gp branch <task-id> <name>        # Create experimental branch
+gp branches <task-id>             # List branches
+gp merge <branch-task-id>         # Merge branch task back into parent
 ```
 
 ### Agent Trace (Commit Attribution)
 ```bash
-mc commit -m "message"            # Commit with agent attribution
-   --task <id>                    # Link to Mission Control task
-mc trace list [--limit <n>]       # List recent traced commits
-mc trace show <hash>              # Show trace details
-mc trace task <task-id>           # Commits linked to a task
+gp commit -m "message"            # Commit with agent attribution
+   --task <id>                    # Link to Gameplan task
+gp trace list [--limit <n>]       # List recent traced commits
+gp trace show <hash>              # Show trace details
+gp trace task <task-id>           # Commits linked to a task
 ```
 
 See [docs/AGENT-TRACE.md](docs/AGENT-TRACE.md) for full documentation.
 
 ## Mention Workflow
 
-Mission Control does not shell out to agent runtimes. External harnesses should poll and advance mention leases through `mc`.
-`mc mentions claim-next` is atomic on the server: each call selects and claims at most one lease for the requested agent.
+Gameplan does not shell out to agent runtimes. External harnesses should poll and advance mention leases through `mc`.
+`gp mentions claim-next` is atomic on the server: each call selects and claims at most one lease for the requested agent.
 
 ```bash
 # Get work for one agent
-mc mentions claim-next --agent gary --json
+gp mentions claim-next --agent gary --json
 
 # If delivery succeeds, acknowledge it
-mc mentions ack <mention-id> --claim-token <token> --json
+gp mentions ack <mention-id> --claim-token <token> --json
 
 # If delivery fails, release it for retry
-mc mentions release <mention-id> --claim-token <token> --error "transport failed" --json
+gp mentions release <mention-id> --claim-token <token> --error "transport failed" --json
 ```
 
-`MC_MENTION_CLAIM_TTL_MS` controls how long a claim stays hidden from other pollers before it becomes pending again.
+`GP_MENTION_CLAIM_TTL_MS` controls how long a claim stays hidden from other pollers before it becomes pending again.
 
 ## Quick Start
 
 ```bash
 # Install
-cd /path/to/mission-control
+cd /path/to/gameplan
 npm install
 
 # Symlink for easy access
-ln -s $(pwd)/bin/mc.js ~/bin/mc
+ln -s $(pwd)/bin/gp.js ~/bin/gp
 
 # Start the sync server
-export MC_API_TOKEN="$(openssl rand -hex 32)"
-MC_API_TOKEN="$MC_API_TOKEN" npm run sync
+export GP_API_TOKEN="$(openssl rand -hex 32)"
+GP_API_TOKEN="$GP_API_TOKEN" npm run sync
 
 # Use the CLI with the same token
-MC_API_TOKEN="$MC_API_TOKEN" mc tasks
+GP_API_TOKEN="$GP_API_TOKEN" mc tasks
 
 # Create a task
-MC_API_TOKEN="$MC_API_TOKEN" mc task create "Fix the thing" --priority p1
+GP_API_TOKEN="$GP_API_TOKEN" mc task create "Fix the thing" --priority p1
 
 # Add a comment
-MC_API_TOKEN="$MC_API_TOKEN" mc comment <task-id> "Working on this now"
+GP_API_TOKEN="$GP_API_TOKEN" mc comment <task-id> "Working on this now"
 
 # Check activity
-MC_API_TOKEN="$MC_API_TOKEN" mc activity --limit 10
+GP_API_TOKEN="$GP_API_TOKEN" mc activity --limit 10
 
 # Optional external harness flow
-MC_API_TOKEN="$MC_API_TOKEN" mc mentions claim-next --agent gary --json
-MC_API_TOKEN="$MC_API_TOKEN" mc mentions ack <mention-id> --claim-token <token> --json
+GP_API_TOKEN="$GP_API_TOKEN" mc mentions claim-next --agent gary --json
+GP_API_TOKEN="$GP_API_TOKEN" mc mentions ack <mention-id> --claim-token <token> --json
 
 # Optional UI client
-VITE_MC_API_TOKEN="$MC_API_TOKEN" npm run dev --prefix ui-prototype
+VITE_GP_API_TOKEN="$GP_API_TOKEN" npm run dev --prefix ui-prototype
 ```
 
-By default the sync server stores data under the **current working directory**. To pin a data root (for example a dedicated folder), set `MC_STORAGE_PATH` when starting the server and use the same layout described under **Data Storage** below.
+By default the sync server stores data under the **current working directory**. To pin a data root (for example a dedicated folder), set `GP_STORAGE_PATH` when starting the server and use the same layout described under **Data Storage** below.
 
 ## Data Storage
 
 ### Automerge Document
-Binary CRDT data lives under a `.mission-control/` directory.
+Binary CRDT data lives under a `.gameplan/` directory.
 
-- **Default** (no `MC_STORAGE_PATH`): `./.mission-control/` in the directory from which you start the sync server, with the document handle in `./.mission-control-url`.
-- **With `MC_STORAGE_PATH` set:** `$MC_STORAGE_PATH/.mission-control/` for binary data, and `$MC_STORAGE_PATH/.mission-control/document-url` for the document handle (not `.mission-control-url` in the cwd).
+- **Default** (no `GP_STORAGE_PATH`): `./.gameplan/` in the directory from which you start the sync server, with the document handle in `./.gameplan-url`.
+- **With `GP_STORAGE_PATH` set:** `$GP_STORAGE_PATH/.gameplan/` for binary data, and `$GP_STORAGE_PATH/.gameplan/document-url` for the document handle (not `.gameplan-url` in the cwd).
 
 ```javascript
 {
@@ -201,40 +201,40 @@ Binary CRDT data lives under a `.mission-control/` directory.
 ```
 
 ### Sync
-See **Automerge Document** above for where the document URL file lives (`.mission-control-url` by default, or `document-url` under `.mission-control` when using `MC_STORAGE_PATH`). The sync server defaults to HTTP `8004` and WebSocket `8005` and can be configured with environment variables.
+See **Automerge Document** above for where the document URL file lives (`.gameplan-url` by default, or `document-url` under `.gameplan` when using `GP_STORAGE_PATH`). The sync server defaults to HTTP `8004` and WebSocket `8005` and can be configured with environment variables.
 
 #### Security Configuration
 The sync server requires an API token by default.
 
 ```bash
 # Generate a token once per shell/session
-export MC_API_TOKEN="$(openssl rand -hex 32)"
+export GP_API_TOKEN="$(openssl rand -hex 32)"
 
 # Start server (binds to 127.0.0.1 by default)
-MC_API_TOKEN="$MC_API_TOKEN" npm run sync
+GP_API_TOKEN="$GP_API_TOKEN" npm run sync
 
 # Use the CLI or any harness wrapper with the same token
-MC_API_TOKEN="$MC_API_TOKEN" mc tasks
+GP_API_TOKEN="$GP_API_TOKEN" mc tasks
 ```
 
 Optional environment settings:
-- `MC_ALLOWED_ORIGINS` (comma-separated CORS allowlist, defaults to localhost dev origins; wildcard `*` is not supported)
-- `MC_BIND_HOST` (default `127.0.0.1`)
-- `MC_HTTP_PORT` (default `8004`)
-- `MC_WS_PORT` (default `8005`)
-- `MC_SYNC_SERVER` (CLI/harness API base URL override, e.g. `http://127.0.0.1:9000`)
-- `MC_STORAGE_PATH` (optional directory; store uses `$MC_STORAGE_PATH/.mission-control` and nested `document-url` as above)
-- `MC_MENTION_CLAIM_TTL_MS` (optional lease length for mention delivery claims; default `30000`)
-- `MC_ALLOW_INSECURE_LOCAL=1` (disables auth; local testing only)
+- `GP_ALLOWED_ORIGINS` (comma-separated CORS allowlist, defaults to localhost dev origins; wildcard `*` is not supported)
+- `GP_BIND_HOST` (default `127.0.0.1`)
+- `GP_HTTP_PORT` (default `8004`)
+- `GP_WS_PORT` (default `8005`)
+- `GP_SYNC_SERVER` (CLI/harness API base URL override, e.g. `http://127.0.0.1:9000`)
+- `GP_STORAGE_PATH` (optional directory; store uses `$GP_STORAGE_PATH/.gameplan` and nested `document-url` as above)
+- `GP_MENTION_CLAIM_TTL_MS` (optional lease length for mention delivery claims; default `30000`)
+- `GP_ALLOW_INSECURE_LOCAL=1` (disables auth; local testing only)
 
-For the Vite UI, set `VITE_MC_API_TOKEN` in `ui-prototype/.env.local`. The UI exchanges that token for a short-lived one-time WebSocket ticket via `/mc-api/automerge/ws-ticket`, so long-lived tokens are not placed in WS URLs.
+For the Vite UI, set `VITE_GP_API_TOKEN` in `ui-prototype/.env.local`. The UI exchanges that token for a short-lived one-time WebSocket ticket via `/gp-api/automerge/ws-ticket`, so long-lived tokens are not placed in WS URLs.
 
 Optional compatibility setting:
-- `MC_ALLOW_LEGACY_WS_QUERY_TOKEN=1` (temporarily allow `?token=` WebSocket auth for old clients; disabled by default)
+- `GP_ALLOW_LEGACY_WS_QUERY_TOKEN=1` (temporarily allow `?token=` WebSocket auth for old clients; disabled by default)
 
 Behavior notes:
-- Browser requests with an `Origin` header must match `MC_ALLOWED_ORIGINS`. Allowed preflight `OPTIONS` requests receive the same allowlisted CORS headers; disallowed origins are rejected with `403`.
-- Originless non-browser requests (for example CLI and harness traffic) are allowed and still require auth unless `MC_ALLOW_INSECURE_LOCAL=1` is set.
+- Browser requests with an `Origin` header must match `GP_ALLOWED_ORIGINS`. Allowed preflight `OPTIONS` requests receive the same allowlisted CORS headers; disallowed origins are rejected with `403`.
+- Originless non-browser requests (for example CLI and harness traffic) are allowed and still require auth unless `GP_ALLOW_INSECURE_LOCAL=1` is set.
 - CLI commands and any harnesses that wrap them fail fast when the sync server is unreachable; they do not fall back to direct local-store access.
 - The sync server logs rejected auth/origin checks with a `[security]` prefix and keeps in-memory counters for HTTP and WebSocket rejections. Those counters are available on the server instance (used by integration tests and any embedder); they are **not** exposed as a public HTTP API.
 
@@ -256,14 +256,14 @@ npm run ui:build
 `GAP:`-prefixed suites under `test/` are reserved for intentionally failing roadmap/specification checks. They remain runnable through `npm run test:gaps`, but `npm test` excludes them by default.
 
 ### Sync Server
-Same as [Quick Start](#quick-start): `MC_API_TOKEN="$MC_API_TOKEN" npm run sync` (HTTP `8004`, WebSocket `8005` by default). Run from the repo root (or set `MC_STORAGE_PATH`) so `.mission-control` lands where you expect.
+Same as [Quick Start](#quick-start): `GP_API_TOKEN="$GP_API_TOKEN" npm run sync` (HTTP `8004`, WebSocket `8005` by default). Run from the repo root (or set `GP_STORAGE_PATH`) so `.gameplan` lands where you expect.
 
 ## Implementation milestones (shipped)
 
 ### Phase 1: Core Infrastructure
 - Automerge CRDT storage (`lib/automerge-store.js`)
 - Task migration from beans (historical migration phase)
-- CLI with full task management (`bin/mc.js`)
+- CLI with full task management (`bin/gp.js`)
 - Comments with @mentions
 - Activity feed and timeline
 - Agent registry
@@ -284,7 +284,7 @@ Same as [Quick Start](#quick-start): `MC_API_TOKEN="$MC_API_TOKEN" npm run sync`
 - Task board with sync
 - Activity feed view
 
-**Also shipped:** Agent Trace (`mc commit` / `mc trace`) — see [docs/AGENT-TRACE.md](docs/AGENT-TRACE.md).
+**Also shipped:** Agent Trace (`gp commit` / `gp trace`) — see [docs/AGENT-TRACE.md](docs/AGENT-TRACE.md).
 
 ## Future work (unprioritized)
 

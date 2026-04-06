@@ -1,10 +1,10 @@
-# Mission Control Documentation
+# Gameplan Documentation
 
 ## Active docs
 
 | Document | Description |
 |----------|-------------|
-| [AGENT-TRACE.md](AGENT-TRACE.md) | `mc commit` / `mc trace` — git commit attribution |
+| [AGENT-TRACE.md](AGENT-TRACE.md) | `gp commit` / `gp trace` — git commit attribution |
 
 Product direction and roadmap-style notes live in the root [README.md](../README.md).
 

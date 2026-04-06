@@ -3,7 +3,7 @@
 /**
  * Automerge Sync Server
  *
- * HTTP/WebSocket hub for the current Mission Control deployment.
+ * HTTP/WebSocket hub for the current Gameplan deployment.
  * CLI, external harnesses, and UI clients talk to this process.
  */
 
@@ -88,14 +88,14 @@ class AutomergeSyncServer {
     this.wss = null
     this.httpServer = null
     this.wsHttpServer = null
-    this.host = options.host ?? env.MC_BIND_HOST ?? '127.0.0.1'
-    this.httpPort = parsePort(options.httpPort ?? env.MC_HTTP_PORT ?? DEFAULT_HTTP_PORT, 'MC_HTTP_PORT')
-    this.wsPort = parsePort(options.wsPort ?? env.MC_WS_PORT ?? DEFAULT_WS_PORT, 'MC_WS_PORT')
-    this.apiToken = options.apiToken ?? env.MC_API_TOKEN ?? ''
-    this.allowInsecureLocal = options.allowInsecureLocal ?? env.MC_ALLOW_INSECURE_LOCAL === '1'
-    this.allowLegacyWsQueryToken = options.allowLegacyWsQueryToken ?? env.MC_ALLOW_LEGACY_WS_QUERY_TOKEN === '1'
+    this.host = options.host ?? env.GP_BIND_HOST ?? '127.0.0.1'
+    this.httpPort = parsePort(options.httpPort ?? env.GP_HTTP_PORT ?? DEFAULT_HTTP_PORT, 'GP_HTTP_PORT')
+    this.wsPort = parsePort(options.wsPort ?? env.GP_WS_PORT ?? DEFAULT_WS_PORT, 'GP_WS_PORT')
+    this.apiToken = options.apiToken ?? env.GP_API_TOKEN ?? ''
+    this.allowInsecureLocal = options.allowInsecureLocal ?? env.GP_ALLOW_INSECURE_LOCAL === '1'
+    this.allowLegacyWsQueryToken = options.allowLegacyWsQueryToken ?? env.GP_ALLOW_LEGACY_WS_QUERY_TOKEN === '1'
     this.wsTicketTtlMs = Number(
-      options.wsTicketTtlMs ?? env.MC_WS_TICKET_TTL_MS ?? 60000
+      options.wsTicketTtlMs ?? env.GP_WS_TICKET_TTL_MS ?? 60000
     )
     this.wsTickets = new Map()
     this.securityCounters = {
@@ -105,22 +105,22 @@ class AutomergeSyncServer {
       wsOriginRejected: 0
     }
     this.allowedOrigins = parseAllowedOrigins(
-      options.allowedOrigins ?? env.MC_ALLOWED_ORIGINS ?? '',
+      options.allowedOrigins ?? env.GP_ALLOWED_ORIGINS ?? '',
       defaultAllowedOrigins(this.httpPort)
     )
 
     if (!this.apiToken && !this.allowInsecureLocal) {
       throw new Error(
-        'MC_API_TOKEN is required. To bypass for local-only testing, set MC_ALLOW_INSECURE_LOCAL=1.'
+        'GP_API_TOKEN is required. To bypass for local-only testing, set GP_ALLOW_INSECURE_LOCAL=1.'
       )
     }
     if (this.allowedOrigins.has('*')) {
       throw new Error(
-        'MC_ALLOWED_ORIGINS must be an explicit comma-separated allowlist. Wildcard "*" is not supported.'
+        'GP_ALLOWED_ORIGINS must be an explicit comma-separated allowlist. Wildcard "*" is not supported.'
       )
     }
     if (!Number.isInteger(this.wsTicketTtlMs) || this.wsTicketTtlMs <= 0) {
-      throw new Error(`Invalid MC_WS_TICKET_TTL_MS: ${env.MC_WS_TICKET_TTL_MS}`)
+      throw new Error(`Invalid GP_WS_TICKET_TTL_MS: ${env.GP_WS_TICKET_TTL_MS}`)
     }
   }
   

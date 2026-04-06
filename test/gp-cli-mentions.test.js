@@ -18,18 +18,18 @@ import {
 
 const __filename = fileURLToPath(import.meta.url)
 const __dirname = dirname(__filename)
-const CLI_PATH = join(__dirname, '..', 'bin', 'mc.js')
+const CLI_PATH = join(__dirname, '..', 'bin', 'gp.js')
 const tempDirs = []
 const servers = []
 
-function makeTempDir(prefix = 'mc-cli-mentions-') {
+function makeTempDir(prefix = 'gp-cli-mentions-') {
   const dir = createTempDir(prefix)
   tempDirs.push(dir)
   return dir
 }
 
 async function startServer() {
-  const storagePath = makeTempDir('mc-cli-mentions-store-')
+  const storagePath = makeTempDir('gp-cli-mentions-store-')
   const server = createServer(storagePath, {})
   await server.start()
   servers.push(server)
@@ -42,7 +42,7 @@ function runCli(cwd, args, env = {}) {
       cwd,
       env: {
         ...process.env,
-        MC_API_TOKEN: TEST_TOKEN,
+        GP_API_TOKEN: TEST_TOKEN,
         ...env,
       },
       stdio: ['ignore', 'pipe', 'pipe'],
@@ -103,7 +103,7 @@ describe('mc CLI mention orchestration', () => {
     })
 
     const result = await runCli(cwd, ['mentions', 'claim-next', '--agent', 'bob', '--json'], {
-      MC_SYNC_SERVER: `http://${server.host}:${server.httpPort}`,
+      GP_SYNC_SERVER: `http://${server.host}:${server.httpPort}`,
     })
 
     assert.equal(result.status, 0, result.stderr)
@@ -134,7 +134,7 @@ describe('mc CLI mention orchestration', () => {
     const mentionId = initialMentions[0].id
 
     const claimResult = await runCli(cwd, ['mentions', 'claim', mentionId, '--json'], {
-      MC_SYNC_SERVER: `http://${server.host}:${server.httpPort}`,
+      GP_SYNC_SERVER: `http://${server.host}:${server.httpPort}`,
     })
     assert.equal(claimResult.status, 0, claimResult.stderr)
 
@@ -144,7 +144,7 @@ describe('mc CLI mention orchestration', () => {
     const releaseResult = await runCli(
       cwd,
       ['mentions', 'release', mentionId, '--claim-token', claim.claimToken, '--json'],
-      { MC_SYNC_SERVER: `http://${server.host}:${server.httpPort}` }
+      { GP_SYNC_SERVER: `http://${server.host}:${server.httpPort}` }
     )
     assert.equal(releaseResult.status, 0, releaseResult.stderr)
 
@@ -155,14 +155,14 @@ describe('mc CLI mention orchestration', () => {
     assert.equal(afterRelease.length, 1, 'Released mentions should reappear in the pending pool')
 
     const secondClaimResult = await runCli(cwd, ['mentions', 'claim', mentionId, '--json'], {
-      MC_SYNC_SERVER: `http://${server.host}:${server.httpPort}`,
+      GP_SYNC_SERVER: `http://${server.host}:${server.httpPort}`,
     })
     const secondClaim = JSON.parse(secondClaimResult.stdout)
 
     const ackResult = await runCli(
       cwd,
       ['mentions', 'ack', mentionId, '--claim-token', secondClaim.claimToken, '--json'],
-      { MC_SYNC_SERVER: `http://${server.host}:${server.httpPort}` }
+      { GP_SYNC_SERVER: `http://${server.host}:${server.httpPort}` }
     )
     assert.equal(ackResult.status, 0, ackResult.stderr)
 
