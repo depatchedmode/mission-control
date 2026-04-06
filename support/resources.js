@@ -115,6 +115,27 @@ export async function createTask(server, fields = {}) {
   return taskId
 }
 
+// Create a move via the API and return its ID
+export async function createMove(server, fields = {}) {
+  const { moveId } = await authedPost(server, '/automerge/move', {
+    title: fields.title || 'Test move',
+    agent: fields.agent || 'test-agent',
+    ...fields,
+  })
+  return moveId
+}
+
+// Create a game via the API and return its ID
+export async function createGame(server, fields = {}) {
+  const { gameId } = await authedPost(server, '/automerge/game', {
+    title: fields.title || 'Test game',
+    endgame: fields.endgame || 'Test endgame',
+    agent: fields.agent || 'test-agent',
+    ...fields,
+  })
+  return gameId
+}
+
 // ─── WebSocket Helpers ───
 
 export async function connectAuthenticatedWs(server) {

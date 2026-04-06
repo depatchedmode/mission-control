@@ -214,9 +214,34 @@ Patchwork Features:
   mc branches <task-id>                    List branches of a task
   mc merge <branch-task-id>                Merge branch back to parent
 
+Moves & Games:
+  mc move create "title" [options]         Create a move
+     --branch <name>                       Git branch for this move
+     --game <game-id>                      Link to a game
+     --description "text"                  Description
+  mc moves [--status <s>] [--game <id>]    List moves
+  mc move show <move-id>                   Show move details
+  mc move update <move-id> [options]       Update a move
+     --status <s>                          proposed/active/completed/failed/abandoned
+     --game <game-id>                      Link to a game (retroactive OK)
+     --branch <name>                       Set git branch
+     --title "text"                        Set title
+     --description "text"                  Set description
+  mc game create "title" [options]         Create a game
+     --endgame "goal description"          The goal state (required)
+     --description "text"                  Description
+  mc games [--status <s>]                  List games
+  mc game show <game-id>                   Show game details with its moves
+  mc game update <game-id> [options]       Update a game
+     --status <s>                          active/won/abandoned/paused
+     --endgame "text"                      Update endgame
+     --title "text"                        Set title
+     --description "text"                  Set description
+
 Agent Trace (commit attribution):
   mc commit [git args]                     Commit with agent attribution trace
      --task <id>                           Link commit to Mission Control task
+     --move <id>                           Link commit to a move
      (all other args passed to git commit)
   mc trace list [--limit <n>]              List recent traced commits
   mc trace show <commit-hash>              Show trace details for a commit
@@ -923,6 +948,312 @@ async function main() {
     }
 
     // ─────────────────────────────────────────
+    // mc move create "title" [options]
+    // ─────────────────────────────────────────
+    else if (command === 'move' && subcommand === 'create') {
+      const title = args[2];
+      const description = getArg('description', '');
+      const branch = getArg('branch');
+      const gameId = getArg('game');
+      const agent = getArg('agent', process.env.MC_AGENT || 'unknown');
+
+      if (!title) {
+        console.error('Usage: mc move create "title" [--branch <name>] [--game <game-id>] [--description "text"]');
+        process.exit(1);
+      }
+
+      try {
+        const data = await apiPost('/automerge/move', { title, description, branch, gameId, agent });
+        console.log(`✅ Move created: ${data.moveId}`);
+        console.log(`   Title: ${title}`);
+        if (branch) console.log(`   Branch: ${branch}`);
+        if (gameId) console.log(`   Game: ${gameId}`);
+      } catch (e) {
+        printCommandError('❌ Failed', e);
+        process.exit(1);
+      }
+    }
+
+    // ─────────────────────────────────────────
+    // mc move show <move-id>
+    // ─────────────────────────────────────────
+    else if (command === 'move' && subcommand === 'show') {
+      const moveId = args[2];
+      if (!moveId) {
+        console.error('Usage: mc move show <move-id>');
+        process.exit(1);
+      }
+
+      try {
+        const data = await apiGet(`/automerge/move/${moveId}`);
+        const m = data.move;
+        console.log(`\n${m.title}`);
+        console.log('─'.repeat(50));
+        console.log(`ID: ${m.id}`);
+        console.log(`Status: ${m.status}`);
+        console.log(`Branch: ${m.branch || '(none)'}`);
+        console.log(`Game: ${m.gameId || '(none)'}`);
+        console.log(`Agent: ${m.agent || '(none)'}`);
+        if (m.description) {
+          console.log(`\nDescription:\n${m.description.substring(0, 500)}${m.description.length > 500 ? '...' : ''}`);
+        }
+        console.log(`\nCreated: ${formatTime(m.created_at)}`);
+        console.log(`Updated: ${formatTime(m.updated_at)}`);
+      } catch (e) {
+        printCommandError('❌ Failed', e);
+        process.exit(1);
+      }
+    }
+
+    // ─────────────────────────────────────────
+    // mc move update <move-id> [options]
+    // ─────────────────────────────────────────
+    else if (command === 'move' && subcommand === 'update') {
+      const moveId = args[2];
+      const agent = getArg('agent', process.env.MC_AGENT || 'unknown');
+
+      if (!moveId) {
+        console.error('Usage: mc move update <move-id> [--status <s>] [--game <id>] [--branch <name>] [--title "text"] [--description "text"]');
+        process.exit(1);
+      }
+
+      const updates = { agent };
+      const status = getArg('status');
+      const title = getArg('title');
+      const description = getArg('description');
+      const branch = getArg('branch');
+      const gameId = getArg('game');
+
+      if (status) updates.status = status;
+      if (title) updates.title = title;
+      if (description) updates.description = description;
+      if (branch) updates.branch = branch;
+      if (gameId) updates.gameId = gameId;
+
+      if (Object.keys(updates).length <= 1) {
+        console.error('No updates specified. Use --status, --game, --branch, --title, or --description');
+        process.exit(1);
+      }
+
+      try {
+        const result = await apiPatch(`/automerge/move/${moveId}`, updates);
+        console.log(`✅ Move ${moveId} updated`);
+        for (const c of result.changes || []) {
+          console.log(`   ${c.field}: ${c.old || '(none)'} → ${c.new}`);
+        }
+      } catch (e) {
+        printCommandError('❌ Failed', e);
+        process.exit(1);
+      }
+    }
+
+    // ─────────────────────────────────────────
+    // mc moves [--status <s>] [--game <id>] [--agent <name>]
+    // ─────────────────────────────────────────
+    else if (command === 'moves') {
+      const status = getArg('status');
+      const gameId = getArg('game');
+      const agent = getArg('agent');
+
+      try {
+        const params = new URLSearchParams();
+        if (status) params.set('status', status);
+        if (gameId) params.set('gameId', gameId);
+        if (agent) params.set('agent', agent);
+
+        const qs = params.toString();
+        const data = await apiGet(`/automerge/moves${qs ? '?' + qs : ''}`);
+        const moves = data.moves || [];
+
+        if (moves.length === 0) {
+          console.log('No moves found.');
+        } else {
+          const filters = [];
+          if (status) filters.push(`status=${status}`);
+          if (gameId) filters.push(`game=${gameId}`);
+          if (agent) filters.push(`agent=@${agent}`);
+          const filterStr = filters.length ? ` (${filters.join(', ')})` : '';
+
+          console.log(`\nMoves${filterStr}: ${moves.length}\n`);
+          for (const m of moves) {
+            const statusIcon = {
+              'proposed': '💡',
+              'active': '🔄',
+              'completed': '✅',
+              'failed': '❌',
+              'abandoned': '🚫'
+            }[m.status] || '●';
+
+            const branchStr = m.branch ? ` [${m.branch}]` : '';
+            const gameStr = m.gameId ? ` (game: ${m.gameId})` : '';
+
+            console.log(`  ${statusIcon} ${m.id}: ${m.title}${branchStr}${gameStr}`);
+            if (m.agent) console.log(`     @${m.agent} · ${formatTime(m.created_at)}`);
+          }
+        }
+      } catch (e) {
+        printCommandError('❌ Failed', e);
+        process.exit(1);
+      }
+    }
+
+    // ─────────────────────────────────────────
+    // mc game create "title" [options]
+    // ─────────────────────────────────────────
+    else if (command === 'game' && subcommand === 'create') {
+      const title = args[2];
+      const endgame = getArg('endgame', '');
+      const description = getArg('description', '');
+      const agent = getArg('agent', process.env.MC_AGENT || 'unknown');
+
+      if (!title) {
+        console.error('Usage: mc game create "title" --endgame "goal description" [--description "text"]');
+        process.exit(1);
+      }
+
+      if (!endgame) {
+        console.error('Every game needs an endgame. Use --endgame "goal description"');
+        process.exit(1);
+      }
+
+      try {
+        const data = await apiPost('/automerge/game', { title, description, endgame, agent });
+        console.log(`✅ Game created: ${data.gameId}`);
+        console.log(`   Title: ${title}`);
+        console.log(`   Endgame: ${endgame}`);
+      } catch (e) {
+        printCommandError('❌ Failed', e);
+        process.exit(1);
+      }
+    }
+
+    // ─────────────────────────────────────────
+    // mc game show <game-id>
+    // ─────────────────────────────────────────
+    else if (command === 'game' && subcommand === 'show') {
+      const gameId = args[2];
+      if (!gameId) {
+        console.error('Usage: mc game show <game-id>');
+        process.exit(1);
+      }
+
+      try {
+        const data = await apiGet(`/automerge/game/${gameId}`);
+        const g = data.game;
+        const moves = data.moves || [];
+
+        console.log(`\n${g.title}`);
+        console.log('─'.repeat(50));
+        console.log(`ID: ${g.id}`);
+        console.log(`Status: ${g.status}`);
+        console.log(`Endgame: ${g.endgame || '(none)'}`);
+        if (g.description) {
+          console.log(`\nDescription:\n${g.description.substring(0, 500)}${g.description.length > 500 ? '...' : ''}`);
+        }
+        console.log(`\nCreated: ${formatTime(g.created_at)}`);
+        console.log(`Updated: ${formatTime(g.updated_at)}`);
+
+        if (moves.length > 0) {
+          console.log(`\nMoves (${moves.length}):`);
+          for (const m of moves) {
+            const statusIcon = {
+              'proposed': '💡',
+              'active': '🔄',
+              'completed': '✅',
+              'failed': '❌',
+              'abandoned': '🚫'
+            }[m.status] || '●';
+            const branchStr = m.branch ? ` [${m.branch}]` : '';
+            console.log(`  ${statusIcon} ${m.id}: ${m.title}${branchStr}`);
+          }
+        } else {
+          console.log('\nNo moves yet.');
+        }
+      } catch (e) {
+        printCommandError('❌ Failed', e);
+        process.exit(1);
+      }
+    }
+
+    // ─────────────────────────────────────────
+    // mc game update <game-id> [options]
+    // ─────────────────────────────────────────
+    else if (command === 'game' && subcommand === 'update') {
+      const gameId = args[2];
+      const agent = getArg('agent', process.env.MC_AGENT || 'unknown');
+
+      if (!gameId) {
+        console.error('Usage: mc game update <game-id> [--status <s>] [--endgame "text"] [--title "text"] [--description "text"]');
+        process.exit(1);
+      }
+
+      const updates = { agent };
+      const status = getArg('status');
+      const title = getArg('title');
+      const description = getArg('description');
+      const endgame = getArg('endgame');
+
+      if (status) updates.status = status;
+      if (title) updates.title = title;
+      if (description) updates.description = description;
+      if (endgame) updates.endgame = endgame;
+
+      if (Object.keys(updates).length <= 1) {
+        console.error('No updates specified. Use --status, --endgame, --title, or --description');
+        process.exit(1);
+      }
+
+      try {
+        const result = await apiPatch(`/automerge/game/${gameId}`, updates);
+        console.log(`✅ Game ${gameId} updated`);
+        for (const c of result.changes || []) {
+          console.log(`   ${c.field}: ${c.old || '(none)'} → ${c.new}`);
+        }
+      } catch (e) {
+        printCommandError('❌ Failed', e);
+        process.exit(1);
+      }
+    }
+
+    // ─────────────────────────────────────────
+    // mc games [--status <s>]
+    // ─────────────────────────────────────────
+    else if (command === 'games') {
+      const status = getArg('status');
+
+      try {
+        const params = new URLSearchParams();
+        if (status) params.set('status', status);
+
+        const qs = params.toString();
+        const data = await apiGet(`/automerge/games${qs ? '?' + qs : ''}`);
+        const games = data.games || [];
+
+        if (games.length === 0) {
+          console.log('No games found.');
+        } else {
+          console.log(`\nGames: ${games.length}\n`);
+          for (const g of games) {
+            const statusIcon = {
+              'active': '🎯',
+              'won': '🏆',
+              'abandoned': '🚫',
+              'paused': '⏸️'
+            }[g.status] || '●';
+
+            console.log(`  ${statusIcon} ${g.id}: ${g.title}`);
+            console.log(`     Endgame: ${g.endgame || '(none)'}`);
+            console.log(`     ${formatTime(g.created_at)}`);
+            console.log();
+          }
+        }
+      } catch (e) {
+        printCommandError('❌ Failed', e);
+        process.exit(1);
+      }
+    }
+
+    // ─────────────────────────────────────────
     // mc commit [git commit args]
     // Wrapper around git commit with agent attribution
     // ─────────────────────────────────────────
@@ -936,6 +1267,7 @@ async function main() {
       
       // Extract our custom args, pass the rest to git
       const taskId = getArg('task');
+      const moveId = getArg('move');
       const agent = getDefaultAgent();
       const model = getArg(
         'model',
@@ -954,12 +1286,24 @@ async function main() {
           process.exit(1);
         }
       }
+
+      if (moveId) {
+        try {
+          const moveData = await apiGet(`/automerge/move/${moveId}`);
+          if (!moveData.success) {
+            throw new Error(`Move ${moveId} not found on sync server`);
+          }
+        } catch (err) {
+          printCommandError('❌ Cannot link commit to move', err);
+          process.exit(1);
+        }
+      }
       
       // Build git args (remove our custom flags)
       const gitArgs = [];
       for (let i = 1; i < args.length; i++) {
         const arg = args[i];
-        if (arg === '--task' || arg === '--agent' || arg === '--model' || arg === '--session') {
+        if (arg === '--task' || arg === '--move' || arg === '--agent' || arg === '--model' || arg === '--session') {
           i++; // skip the value too
         } else {
           gitArgs.push(arg);
@@ -1001,7 +1345,28 @@ async function main() {
       console.log(`   Agent: @${trace.agent.name}`);
       if (trace.agent.model) console.log(`   Model: ${trace.agent.model}`);
       if (trace.task) console.log(`   Task: ${trace.task}`);
-      
+      if (moveId) console.log(`   Move: ${moveId}`);
+
+      // Link commit to move if specified
+      if (moveId) {
+        try {
+          await apiPost(`/automerge/move/${moveId}/commit`, {
+            commit: {
+              hash: commitInfo.hash,
+              message: commitInfo.message,
+              diff: diffStats
+            },
+            agent
+          });
+          console.log(`   📎 Linked to move`);
+        } catch (err) {
+          console.error(`⚠️  Commit created, but move was not updated: ${err.message}`);
+          if (isTransportFailure(err)) {
+            printSyncRuntimeHint();
+          }
+        }
+      }
+
       // Link commit to Patchwork timeline if task specified
       if (taskId) {
         try {

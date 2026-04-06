@@ -791,6 +791,184 @@ class AutomergeSyncServer {
       }
     })
 
+    // ─── Moves ───
+
+    // Create move
+    this.app.post('/automerge/move', async (req, res) => {
+      try {
+        const { title, description, branch, gameId, agent } = req.body
+        if (!title) {
+          return res.status(400).json({ error: 'Title is required' })
+        }
+        if (gameId) {
+          const game = await this.store.getGame(gameId)
+          if (!game) {
+            return res.status(404).json({ error: `Game ${gameId} not found` })
+          }
+        }
+        const moveId = await this.store.createMove({ title, description, branch, gameId, agent })
+        this.broadcastDocumentUpdate()
+        res.json({ success: true, moveId })
+      } catch (error) {
+        res.status(500).json({ error: error.message })
+      }
+    })
+
+    // List moves
+    this.app.get('/automerge/moves', async (req, res) => {
+      try {
+        const { gameId, status, agent } = req.query
+        const moves = await this.store.getMoves({ gameId, status, agent })
+        res.json({ success: true, moves })
+      } catch (error) {
+        res.status(500).json({ error: error.message })
+      }
+    })
+
+    // Get single move
+    this.app.get('/automerge/move/:moveId', async (req, res) => {
+      try {
+        const move = await this.store.getMove(req.params.moveId)
+        if (!move) {
+          return res.status(404).json({ error: `Move ${req.params.moveId} not found` })
+        }
+        res.json({ success: true, move })
+      } catch (error) {
+        res.status(500).json({ error: error.message })
+      }
+    })
+
+    // Update move
+    this.app.patch('/automerge/move/:moveId', async (req, res) => {
+      try {
+        const { moveId } = req.params
+        const { status, title, description, branch, gameId, agent } = req.body
+
+        const updates = {}
+        if (status !== undefined) updates.status = status
+        if (title !== undefined) updates.title = title
+        if (description !== undefined) updates.description = description
+        if (branch !== undefined) updates.branch = branch
+        if (gameId !== undefined) updates.gameId = gameId
+
+        if (gameId) {
+          const game = await this.store.getGame(gameId)
+          if (!game) {
+            return res.status(404).json({ error: `Game ${gameId} not found` })
+          }
+        }
+
+        const result = await this.store.updateMove(moveId, updates, agent || 'api')
+        if (!result.success) {
+          if (result.error === 'Move not found') {
+            return res.status(404).json({ error: `Move ${moveId} not found` })
+          }
+          return res.status(500).json({ error: result.error })
+        }
+
+        if (result.changes.length > 0) {
+          this.broadcastDocumentUpdate()
+        }
+        res.json({ success: true, moveId, changes: result.changes })
+      } catch (error) {
+        res.status(500).json({ error: error.message })
+      }
+    })
+
+    // Link commit to move
+    this.app.post('/automerge/move/:moveId/commit', async (req, res) => {
+      try {
+        const { moveId } = req.params
+        const { commit, agent } = req.body
+
+        if (!commit?.hash || !commit?.message) {
+          return res.status(400).json({ error: 'commit.hash and commit.message are required' })
+        }
+
+        const move = await this.store.getMove(moveId)
+        if (!move) {
+          return res.status(404).json({ error: `Move ${moveId} not found` })
+        }
+
+        await this.store.recordMoveCommit(moveId, commit, agent || 'api')
+        this.broadcastDocumentUpdate()
+        res.json({ success: true, moveId, commitHash: commit.hash })
+      } catch (error) {
+        res.status(500).json({ error: error.message })
+      }
+    })
+
+    // ─── Games ───
+
+    // Create game
+    this.app.post('/automerge/game', async (req, res) => {
+      try {
+        const { title, description, endgame, agent } = req.body
+        if (!title) {
+          return res.status(400).json({ error: 'Title is required' })
+        }
+        const gameId = await this.store.createGame({ title, description, endgame, agent })
+        this.broadcastDocumentUpdate()
+        res.json({ success: true, gameId })
+      } catch (error) {
+        res.status(500).json({ error: error.message })
+      }
+    })
+
+    // List games
+    this.app.get('/automerge/games', async (req, res) => {
+      try {
+        const { status } = req.query
+        const games = await this.store.getGames({ status })
+        res.json({ success: true, games })
+      } catch (error) {
+        res.status(500).json({ error: error.message })
+      }
+    })
+
+    // Get single game (includes its moves)
+    this.app.get('/automerge/game/:gameId', async (req, res) => {
+      try {
+        const game = await this.store.getGame(req.params.gameId)
+        if (!game) {
+          return res.status(404).json({ error: `Game ${req.params.gameId} not found` })
+        }
+        const moves = await this.store.getGameMoves(req.params.gameId)
+        res.json({ success: true, game, moves })
+      } catch (error) {
+        res.status(500).json({ error: error.message })
+      }
+    })
+
+    // Update game
+    this.app.patch('/automerge/game/:gameId', async (req, res) => {
+      try {
+        const { gameId } = req.params
+        const { status, title, description, endgame, agent } = req.body
+
+        const updates = {}
+        if (status !== undefined) updates.status = status
+        if (title !== undefined) updates.title = title
+        if (description !== undefined) updates.description = description
+        if (endgame !== undefined) updates.endgame = endgame
+
+        const result = await this.store.updateGame(gameId, updates, agent || 'api')
+        if (!result.success) {
+          if (result.error === 'Game not found') {
+            return res.status(404).json({ error: `Game ${gameId} not found` })
+          }
+          return res.status(500).json({ error: result.error })
+        }
+
+        if (result.changes.length > 0) {
+          this.broadcastDocumentUpdate()
+        }
+        res.json({ success: true, gameId, changes: result.changes })
+      } catch (error) {
+        res.status(500).json({ error: error.message })
+      }
+    })
+
     this.logger.log?.('🌐 HTTP API routes configured')
   }
   
