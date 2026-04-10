@@ -129,7 +129,8 @@ See [docs/AGENT-TRACE.md](docs/AGENT-TRACE.md) for full documentation.
 
 ## Mention Workflow
 
-Mission Control no longer shells out to agent runtimes. External harnesses should poll and advance mention leases through `mc`.
+Mission Control does not shell out to agent runtimes. External harnesses should poll and advance mention leases through `mc`.
+`mc mentions claim-next` is atomic on the server: each call selects and claims at most one lease for the requested agent.
 
 ```bash
 # Get work for one agent

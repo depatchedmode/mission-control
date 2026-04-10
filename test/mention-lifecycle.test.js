@@ -30,6 +30,12 @@ function expectedIdempotencyKey(commentId, toAgent) {
     .digest('hex')
 }
 
+async function getPendingMentions(server, agent) {
+  const suffix = agent ? `?agent=${encodeURIComponent(agent)}` : ''
+  const { mentions } = await authedGet(server, `/automerge/mentions/pending${suffix}`)
+  return mentions
+}
+
 describe('mention lifecycle', () => {
   it('comment with @mention creates a pending mention record', async () => {
     await withStartedServer({}, async server => {
@@ -64,10 +70,7 @@ describe('mention lifecycle', () => {
         agent: 'alice',
       })
 
-      const { mentions: before } = await authedGet(
-        server,
-        '/automerge/mentions/pending?agent=bob'
-      )
+      const before = await getPendingMentions(server, 'bob')
       assert.equal(before.length, 1)
 
       const claim = await authedPost(server, `/automerge/mentions/${before[0].id}/claim`, {})
@@ -81,11 +84,54 @@ describe('mention lifecycle', () => {
       assert.ok(deliver.success)
       assert.equal(deliver.delivered, true)
 
-      const { mentions: after } = await authedGet(
-        server,
-        '/automerge/mentions/pending?agent=bob'
-      )
+      const after = await getPendingMentions(server, 'bob')
       assert.equal(after.length, 0, 'No pending mentions after delivery')
+    })
+  })
+
+  it('claim-next atomically claims one mention for a specific agent', async () => {
+    await withStartedServer({}, async server => {
+      const taskId = await createTask(server)
+
+      await authedPost(server, '/automerge/comment', {
+        taskId,
+        text: '@bob first mention',
+        agent: 'alice',
+      })
+      await authedPost(server, '/automerge/comment', {
+        taskId,
+        text: '@bob second mention',
+        agent: 'charlie',
+      })
+      await authedPost(server, '/automerge/comment', {
+        taskId,
+        text: '@dave different agent mention',
+        agent: 'erin',
+      })
+
+      const claim = await authedPost(server, '/automerge/mentions/claim-next', { agent: 'bob' })
+      assert.ok(claim.success)
+      assert.equal(claim.claimed, true)
+      assert.equal(claim.mention.to_agent, 'bob')
+      assert.equal(typeof claim.claimToken, 'string')
+      assert.equal(typeof claim.claimExpiresAt, 'string')
+
+      const bobPending = await getPendingMentions(server, 'bob')
+      assert.equal(bobPending.length, 1, 'Exactly one bob mention should remain after claim-next')
+
+      const davePending = await getPendingMentions(server, 'dave')
+      assert.equal(davePending.length, 1, 'Claim-next should not affect other agents')
+    })
+  })
+
+  it('claim-next returns an unclaimed shape when no work exists for an agent', async () => {
+    await withStartedServer({}, async server => {
+      const claim = await authedPost(server, '/automerge/mentions/claim-next', { agent: 'nobody' })
+      assert.ok(claim.success)
+      assert.equal(claim.claimed, false)
+      assert.equal(claim.mention, null)
+      assert.equal(claim.claimToken, null)
+      assert.equal(claim.claimExpiresAt, null)
     })
   })
 
@@ -99,10 +145,7 @@ describe('mention lifecycle', () => {
         agent: 'alice',
       })
 
-      const { mentions: before } = await authedGet(
-        server,
-        '/automerge/mentions/pending?agent=bob'
-      )
+      const before = await getPendingMentions(server, 'bob')
       assert.equal(before.length, 1)
 
       const claim = await authedPost(server, `/automerge/mentions/${before[0].id}/claim`, {})
@@ -111,10 +154,7 @@ describe('mention lifecycle', () => {
       assert.equal(typeof claim.claimToken, 'string')
       assert.equal(typeof claim.claimExpiresAt, 'string')
 
-      const { mentions: hidden } = await authedGet(
-        server,
-        '/automerge/mentions/pending?agent=bob'
-      )
+      const hidden = await getPendingMentions(server, 'bob')
       assert.equal(hidden.length, 0, 'Claimed mentions should not be re-polled')
 
       const secondClaim = await authedPost(
@@ -132,10 +172,7 @@ describe('mention lifecycle', () => {
       assert.ok(release.success)
       assert.equal(release.released, true)
 
-      const { mentions: afterRelease } = await authedGet(
-        server,
-        '/automerge/mentions/pending?agent=bob'
-      )
+      const afterRelease = await getPendingMentions(server, 'bob')
       assert.equal(afterRelease.length, 1, 'Released mentions should be pending again')
     })
   })
@@ -150,21 +187,18 @@ describe('mention lifecycle', () => {
         agent: 'alice',
       })
 
-      const { mentions } = await authedGet(server, '/automerge/mentions/pending?agent=bob')
+      const mentions = await getPendingMentions(server, 'bob')
       const mentionId = mentions[0].id
 
       const claim = await authedPost(server, `/automerge/mentions/${mentionId}/claim`, {})
       assert.ok(claim.claimed)
 
-      const { mentions: hidden } = await authedGet(server, '/automerge/mentions/pending?agent=bob')
+      const hidden = await getPendingMentions(server, 'bob')
       assert.equal(hidden.length, 0)
 
       await delay(40)
 
-      const { mentions: afterExpiry } = await authedGet(
-        server,
-        '/automerge/mentions/pending?agent=bob'
-      )
+      const afterExpiry = await getPendingMentions(server, 'bob')
       assert.equal(afterExpiry.length, 1)
       assert.equal(afterExpiry[0].id, mentionId)
     })
@@ -180,7 +214,7 @@ describe('mention lifecycle', () => {
         agent: 'alice',
       })
 
-      const { mentions } = await authedGet(server, '/automerge/mentions/pending?agent=bob')
+      const mentions = await getPendingMentions(server, 'bob')
       const mentionId = mentions[0].id
 
       const claim = await authedPost(server, `/automerge/mentions/${mentionId}/claim`, {})
@@ -200,10 +234,7 @@ describe('mention lifecycle', () => {
       assert.equal(staleRelease.status, 409)
       assert.match(staleRelease.error, /claim token mismatch/i)
 
-      const { mentions: pendingAgain } = await authedGet(
-        server,
-        '/automerge/mentions/pending?agent=bob'
-      )
+      const pendingAgain = await getPendingMentions(server, 'bob')
       assert.equal(pendingAgain.length, 1)
       assert.equal(pendingAgain[0].id, mentionId)
 
@@ -228,7 +259,7 @@ describe('mention lifecycle', () => {
         agent: 'alice',
       })
 
-      const { mentions } = await authedGet(server, '/automerge/mentions/pending?agent=bob')
+      const mentions = await getPendingMentions(server, 'bob')
       const mentionId = mentions[0].id
 
       const claim = await authedPost(server, `/automerge/mentions/${mentionId}/claim`, {})
@@ -240,10 +271,7 @@ describe('mention lifecycle', () => {
       server = createServer(storagePath, { usePersistedUrl: true, mentionClaimTtlMs: 400 })
       await server.start()
 
-      const { mentions: immediatelyAfterRestart } = await authedGet(
-        server,
-        '/automerge/mentions/pending?agent=bob'
-      )
+      const immediatelyAfterRestart = await getPendingMentions(server, 'bob')
       assert.equal(
         immediatelyAfterRestart.length,
         0,
@@ -252,10 +280,7 @@ describe('mention lifecycle', () => {
 
       await delay(425)
 
-      const { mentions: afterExpiry } = await authedGet(
-        server,
-        '/automerge/mentions/pending?agent=bob'
-      )
+      const afterExpiry = await getPendingMentions(server, 'bob')
       assert.equal(afterExpiry.length, 1)
       assert.equal(afterExpiry[0].id, mentionId)
     } finally {
@@ -277,7 +302,7 @@ describe('mention lifecycle', () => {
         agent: 'alice',
       })
 
-      const { mentions } = await authedGet(server, '/automerge/mentions/pending?agent=bob')
+      const mentions = await getPendingMentions(server, 'bob')
       const mentionId = mentions[0].id
 
       const firstClaim = await authedPost(server, `/automerge/mentions/${mentionId}/claim`, {})
@@ -347,24 +372,15 @@ describe('mention lifecycle', () => {
         agent: 'charlie',
       })
 
-      const { mentions: aliceMentions } = await authedGet(
-        server,
-        '/automerge/mentions/pending?agent=alice'
-      )
+      const aliceMentions = await getPendingMentions(server, 'alice')
       assert.equal(aliceMentions.length, 1)
       assert.equal(aliceMentions[0].to_agent, 'alice')
 
-      const { mentions: bobMentions } = await authedGet(
-        server,
-        '/automerge/mentions/pending?agent=bob'
-      )
+      const bobMentions = await getPendingMentions(server, 'bob')
       assert.equal(bobMentions.length, 1)
       assert.equal(bobMentions[0].to_agent, 'bob')
 
-      const { mentions: unknownMentions } = await authedGet(
-        server,
-        '/automerge/mentions/pending?agent=nobody'
-      )
+      const unknownMentions = await getPendingMentions(server, 'nobody')
       assert.equal(unknownMentions.length, 0)
     })
   })
@@ -379,7 +395,7 @@ describe('mention lifecycle', () => {
         agent: 'charlie',
       })
 
-      const { mentions } = await authedGet(server, '/automerge/mentions/pending')
+      const mentions = await getPendingMentions(server)
       assert.equal(mentions.length, 2, 'Should return all pending mentions')
     })
   })
@@ -434,7 +450,7 @@ describe('mention lifecycle', () => {
         agent: 'alice',
       })
 
-      const { mentions } = await authedGet(server, '/automerge/mentions/pending?agent=bob')
+      const mentions = await getPendingMentions(server, 'bob')
       const mentionId = mentions[0].id
 
       const claim = await authedPost(server, `/automerge/mentions/${mentionId}/claim`, {})
@@ -470,7 +486,7 @@ describe('mention lifecycle', () => {
         agent: 'charlie',
       })
 
-      const { mentions } = await authedGet(server, '/automerge/mentions/pending?agent=bob')
+      const mentions = await getPendingMentions(server, 'bob')
       assert.equal(mentions.length, 2, 'Bob should have 2 pending mentions')
 
       const taskIds = mentions.map(m => m.taskId).sort()

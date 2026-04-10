@@ -38,8 +38,7 @@ import { activityTaskId } from '../lib/activity-task-id.js';
 
 const API_BASE = process.env.MC_SYNC_SERVER || `http://localhost:${process.env.MC_HTTP_PORT || '8004'}`;
 const API_TOKEN = process.env.MC_API_TOKEN || null;
-const rawArgs = process.argv.slice(2);
-const args = rawArgs;
+const args = process.argv.slice(2);
 const command = args[0];
 const subcommand = args[1];
 const BOOLEAN_FLAGS = new Set(['--json']);
@@ -47,13 +46,13 @@ const BOOLEAN_FLAGS = new Set(['--json']);
 // Extract positional args (skip --flag value pairs)
 function positionalArgs() {
   const result = [];
-  for (let i = 0; i < rawArgs.length; i++) {
-    if (rawArgs[i].startsWith('--')) {
-      if (!BOOLEAN_FLAGS.has(rawArgs[i])) {
+  for (let i = 0; i < args.length; i++) {
+    if (args[i].startsWith('--')) {
+      if (!BOOLEAN_FLAGS.has(args[i])) {
         i++; // skip flag value
       }
     } else {
-      result.push(rawArgs[i]);
+      result.push(args[i]);
     }
   }
   return result;
@@ -150,24 +149,12 @@ async function acknowledgeMention(mentionId, claimToken) {
 }
 
 async function claimNextMention(agent) {
-  const mentions = await getPendingMentions(agent);
-  for (const mention of mentions) {
-    const claim = await claimMention(mention.id);
-    if (claim.claimed) {
-      return {
-        mention,
-        claimed: true,
-        claimToken: claim.claimToken,
-        claimExpiresAt: claim.claimExpiresAt,
-      };
-    }
-  }
-
+  const data = await apiPost('/automerge/mentions/claim-next', { agent });
   return {
-    mention: null,
-    claimed: false,
-    claimToken: null,
-    claimExpiresAt: null,
+    mention: data.mention || null,
+    claimed: Boolean(data.claimed),
+    claimToken: data.claimToken || null,
+    claimExpiresAt: data.claimExpiresAt || null,
   };
 }
 
@@ -280,6 +267,10 @@ function hasFlag(name) {
   return args.includes(`--${name}`);
 }
 
+function getDefaultAgent() {
+  return getArg('agent', process.env.MC_AGENT || 'unknown');
+}
+
 function printJson(value) {
   console.log(JSON.stringify(value, null, 2));
 }
@@ -297,7 +288,7 @@ async function main() {
       const posArgs = positionalArgs();
       const taskId = posArgs[1];
       const message = posArgs[2];
-      const agent = getArg('agent', process.env.MC_AGENT || 'unknown');
+      const agent = getDefaultAgent();
       
       if (!taskId || !message) {
         console.error('Usage: mc comment <task-id> "message" [--agent <name>]');
@@ -777,7 +768,7 @@ async function main() {
     // ─────────────────────────────────────────
     else if (command === 'update') {
       const taskId = args[1];
-      const agent = getArg('agent', process.env.MC_AGENT || 'unknown');
+      const agent = getDefaultAgent();
       
       if (!taskId) {
         console.error('Usage: mc update <task-id> [--status <s>] [--assignee <name>] [--title "text"] [--description "text"] [--priority <p>]');
@@ -820,7 +811,7 @@ async function main() {
     else if (command === 'branch') {
       const taskId = args[1];
       const branchName = args[2];
-      const agent = getArg('agent', process.env.MC_AGENT || 'unknown');
+      const agent = getDefaultAgent();
       
       if (!taskId || !branchName) {
         console.error('Usage: mc branch <task-id> <branch-name>');
@@ -881,7 +872,7 @@ async function main() {
     // ─────────────────────────────────────────
     else if (command === 'merge') {
       const branchId = args[1];
-      const agent = getArg('agent', process.env.MC_AGENT || 'unknown');
+      const agent = getDefaultAgent();
       
       if (!branchId) {
         console.error('Usage: mc merge <branch-task-id>');
@@ -908,7 +899,7 @@ async function main() {
       const assignee = getArg('assignee');
       const tagsArg = getArg('tag');
       const tags = tagsArg ? [tagsArg] : [];
-      const agent = getArg('agent', process.env.MC_AGENT || 'unknown');
+      const agent = getDefaultAgent();
       
       if (!title) {
         console.error('Usage: mc task create "title" [--priority p0-p3] [--assignee name] [--tag tag]');
@@ -942,7 +933,7 @@ async function main() {
       
       // Extract our custom args, pass the rest to git
       const taskId = getArg('task');
-      const agent = getArg('agent', process.env.MC_AGENT || 'unknown');
+      const agent = getDefaultAgent();
       const model = getArg(
         'model',
         process.env.MC_AGENT_MODEL || process.env.OPENCLAW_MODEL || null
@@ -963,8 +954,8 @@ async function main() {
       
       // Build git args (remove our custom flags)
       const gitArgs = [];
-      for (let i = 1; i < rawArgs.length; i++) {
-        const arg = rawArgs[i];
+      for (let i = 1; i < args.length; i++) {
+        const arg = args[i];
         if (arg === '--task' || arg === '--agent' || arg === '--model' || arg === '--session') {
           i++; // skip the value too
         } else {

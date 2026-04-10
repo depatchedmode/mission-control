@@ -69,6 +69,15 @@ function isNonEmptyString(value) {
   return typeof value === 'string' && value.trim().length > 0
 }
 
+function parseGithubRepo(remote) {
+  if (typeof remote !== 'string' || !remote.includes('github.com')) return null
+
+  return remote
+    .replace(/^https:\/\/github\.com\//, '')
+    .replace(/^git@github\.com:/, '')
+    .replace(/\.git$/, '')
+}
+
 class AutomergeSyncServer {
   constructor(options = {}) {
     const env = options.env ?? process.env
@@ -387,6 +396,24 @@ class AutomergeSyncServer {
       }
     })
 
+    // Atomically claim the next pending mention for one agent.
+    this.app.post('/automerge/mentions/claim-next', async (req, res) => {
+      try {
+        const { agent } = req.body ?? {}
+        if (!isNonEmptyString(agent)) {
+          return res.status(400).json({ error: 'agent is required' })
+        }
+
+        const result = await this.store.claimNextMentionDelivery(agent)
+        if (result.claimed) {
+          this.broadcastDocumentUpdate()
+        }
+        res.json({ success: true, ...result })
+      } catch (error) {
+        res.status(500).json({ error: error.message })
+      }
+    })
+
     // Release a failed delivery attempt so the mention becomes pending again.
     this.app.post('/automerge/mentions/:id/release', async (req, res) => {
       try {
@@ -530,13 +557,9 @@ class AutomergeSyncServer {
             cwd: gitRoot,
             encoding: 'utf-8'
           }).trim()
-          
-          // Parse GitHub URL (supports both HTTPS and SSH formats)
-          if (remote.includes('github.com')) {
-            let repo = remote
-              .replace(/^https:\/\/github\.com\//, '')
-              .replace(/^git@github\.com:/, '')
-              .replace(/\.git$/, '')
+
+          const repo = parseGithubRepo(remote)
+          if (repo) {
             githubUrl = `https://github.com/${repo}/commit/${commitHash}`
           }
         } catch {
@@ -568,13 +591,9 @@ class AutomergeSyncServer {
             cwd: gitRoot,
             encoding: 'utf-8'
           }).trim()
-          
-          // Parse GitHub URL
-          if (remote.includes('github.com')) {
-            let repo = remote
-              .replace(/^https:\/\/github\.com\//, '')
-              .replace(/^git@github\.com:/, '')
-              .replace(/\.git$/, '')
+
+          const repo = parseGithubRepo(remote)
+          if (repo) {
             const githubUrl = `https://github.com/${repo}`
             res.json({ success: true, githubUrl, repo })
           } else {
