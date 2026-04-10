@@ -15,6 +15,7 @@ import { createServer } from 'node:http'
 import { execSync } from 'node:child_process'
 import { fileURLToPath } from 'url'
 import { findGitRoot, getTraceByCommit } from './lib/agent-trace.js'
+import { parseGithubRepo } from './lib/github-remote.js'
 
 const DEFAULT_HTTP_PORT = 8004
 const DEFAULT_WS_PORT = 8005
@@ -67,15 +68,6 @@ function getBearerToken(authorizationHeader = '') {
 
 function isNonEmptyString(value) {
   return typeof value === 'string' && value.trim().length > 0
-}
-
-function parseGithubRepo(remote) {
-  if (typeof remote !== 'string' || !remote.includes('github.com')) return null
-
-  return remote
-    .replace(/^https:\/\/github\.com\//, '')
-    .replace(/^git@github\.com:/, '')
-    .replace(/\.git$/, '')
 }
 
 class AutomergeSyncServer {

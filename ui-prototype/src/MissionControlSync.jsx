@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { requestJson, withBearerAuthHeaders } from '../../lib/sync-client.js'
+import { requestJson, withBearerAuthHeaders, SyncRequestError } from '../../lib/sync-client.js'
 import { activityTaskId } from '../../lib/activity-task-id.js'
 
 const REMARK_GFM_PLUGINS = [remarkGfm]
@@ -99,6 +99,7 @@ export default function MissionControlSync() {
   const [reconciledPendingMentions, setReconciledPendingMentions] = useState(null)
   const [reconciledActor, setReconciledActor] = useState(null)
   const [notificationsError, setNotificationsError] = useState(null)
+  const [traceFetchError, setTraceFetchError] = useState(null)
   const wsRef = useRef(null)
   const notificationsRef = useRef(null)
   const currentUserRef = useRef(currentUser)
@@ -202,6 +203,7 @@ export default function MissionControlSync() {
         setShowNewTask(false)
         setShowNotifications(false)
         setNotificationsError(null)
+        setTraceFetchError(null)
       }
     }
     window.addEventListener('keydown', handleEsc)
@@ -354,14 +356,24 @@ export default function MissionControlSync() {
   }
   
   const fetchTraceDetails = async (commitHash) => {
+    setTraceFetchError(null)
     try {
       const data = await requestJson('', `/mc-api/automerge/trace/${encodeURIComponent(commitHash)}`, {
         token: API_TOKEN,
       })
       if (data.success) {
         setSelectedTrace(data)
+        return
       }
+      setTraceFetchError(
+        typeof data.error === 'string' ? data.error : 'Could not load trace for this commit.'
+      )
     } catch (error) {
+      const message =
+        error instanceof SyncRequestError
+          ? error.message
+          : 'Could not load trace for this commit.'
+      setTraceFetchError(message)
       console.error('Failed to fetch trace:', error)
     }
   }
@@ -500,6 +512,19 @@ export default function MissionControlSync() {
           {notificationsError}
         </div>
       )}
+      {traceFetchError && (
+        <div style={styles.errorBanner} role="alert">
+          <span style={{ flex: 1 }}>{traceFetchError}</span>
+          <button
+            type="button"
+            style={styles.traceErrorDismiss}
+            onClick={() => setTraceFetchError(null)}
+            aria-label="Dismiss trace error"
+          >
+            Dismiss
+          </button>
+        </div>
+      )}
       
       {view === 'board' ? (<>
       {/* Mobile column tabs */}
@@ -562,7 +587,10 @@ export default function MissionControlSync() {
         <TraceModal 
           trace={selectedTrace.trace}
           githubUrl={selectedTrace.githubUrl}
-          onClose={() => setSelectedTrace(null)}
+          onClose={() => {
+            setSelectedTrace(null)
+            setTraceFetchError(null)
+          }}
         />
       )}
     </div>
@@ -891,7 +919,10 @@ function TaskHistory({ taskHistory, comments, taskActivity, fetchTraceDetails, f
                   <span>{icon}</span>
                   <code 
                     style={{...styles.commitHash, cursor: 'pointer'}} 
-                    onClick={() => fetchTraceDetails(entry.commit.hash)}
+                    onClick={(e) => {
+                      e.stopPropagation()
+                      fetchTraceDetails(entry.commit.hash)
+                    }}
                     title="Click to view trace details"
                   >
                     {entry.commit.shortHash}
@@ -1247,7 +1278,8 @@ const styles = {
   notificationsEmpty: { margin: 0, fontSize: 13, color: '#666', padding: '8px 4px' },
   connectionDot: { width: 8, height: 8, borderRadius: '50%' },
   addBtn: { background: '#fff', color: '#0a0a0a', border: 'none', borderRadius: 6, padding: '8px 14px', fontSize: 13, fontWeight: 500, cursor: 'pointer' },
-  errorBanner: { margin: '12px 20px 0', padding: '10px 12px', borderRadius: 8, border: '1px solid #ef4444', color: '#fecaca', background: 'rgba(127, 29, 29, 0.35)', fontSize: 13 },
+  errorBanner: { margin: '12px 20px 0', padding: '10px 12px', borderRadius: 8, border: '1px solid #ef4444', color: '#fecaca', background: 'rgba(127, 29, 29, 0.35)', fontSize: 13, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' },
+  traceErrorDismiss: { background: 'transparent', border: '1px solid #fecaca', color: '#fecaca', borderRadius: 6, padding: '4px 10px', fontSize: 12, cursor: 'pointer', flexShrink: 0 },
   
   columnHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 20px', borderBottom: '1px solid #1a1a1a' },
   columnTitle: { fontSize: 13, fontWeight: 500, color: '#888', textTransform: 'uppercase', letterSpacing: '0.05em' },
