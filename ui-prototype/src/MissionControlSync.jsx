@@ -5,6 +5,8 @@ import { requestJson, withBearerAuthHeaders } from '../../lib/sync-client.js'
 import { activityTaskId } from '../../lib/activity-task-id.js'
 
 const REMARK_GFM_PLUGINS = [remarkGfm]
+const CURRENT_USER_STORAGE_KEY = 'mc-current-user'
+const WRITE_ACTOR = import.meta.env.VITE_MC_WRITE_ACTOR || 'depatched'
 
 // Global lastSeen map (current single-operator prototype; stored in the shared Automerge doc)
 const API_TOKEN = import.meta.env.VITE_MC_API_TOKEN || null
@@ -43,6 +45,26 @@ function formatRelativeTime(ts) {
   return d.toLocaleDateString()
 }
 
+function parseIsoTimestampMs(value) {
+  if (typeof value !== 'string' || !value) return null
+  const parsed = Date.parse(value)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function isMentionPendingForAgent(mention, agent, nowMs = Date.now()) {
+  if (!mention || typeof mention !== 'object') return false
+  if (mention.delivered) return false
+  if (typeof mention.to_agent !== 'string') return false
+  if (mention.to_agent.toLowerCase() !== agent.toLowerCase()) return false
+
+  const hasClaimToken = typeof mention.delivery_claim_token === 'string' && mention.delivery_claim_token
+  if (!hasClaimToken) return true
+
+  const claimExpiryMs = parseIsoTimestampMs(mention.delivery_claim_expires_at)
+  if (claimExpiryMs === null) return true
+  return claimExpiryMs <= nowMs
+}
+
 async function requestWebSocketTicket() {
   const payload = await requestJson('', '/mc-api/automerge/ws-ticket', {
     method: 'POST',
@@ -66,7 +88,46 @@ export default function MissionControlSync() {
   const [draggedTask, setDraggedTask] = useState(null)
   const [mobileActiveColumn, setMobileActiveColumn] = useState('in-progress')
   const [view, setView] = useState('board') // 'board' or 'activity'
+  const [currentUser, setCurrentUser] = useState(() => {
+    try {
+      return window.localStorage.getItem(CURRENT_USER_STORAGE_KEY) || ''
+    } catch {
+      return ''
+    }
+  })
+  const [showNotifications, setShowNotifications] = useState(false)
+  const [reconciledPendingMentions, setReconciledPendingMentions] = useState(null)
+  const [reconciledActor, setReconciledActor] = useState(null)
+  const [notificationsError, setNotificationsError] = useState(null)
   const wsRef = useRef(null)
+  const notificationsRef = useRef(null)
+  const currentUserRef = useRef(currentUser)
+  const pendingFetchIdRef = useRef(0)
+
+  const actorNames = useMemo(() => {
+    const seen = new Set()
+    const actors = []
+
+    const pushActor = (value) => {
+      if (typeof value !== 'string') return
+      const trimmed = value.trim()
+      if (!trimmed) return
+      const key = trimmed.toLowerCase()
+      if (seen.has(key)) return
+      seen.add(key)
+      actors.push(trimmed)
+    }
+
+    Object.values(doc?.agents || {}).forEach(agent => pushActor(agent?.name))
+    Object.values(doc?.comments || {}).forEach(comment => pushActor(comment?.agent))
+    Object.values(doc?.tasks || {}).forEach(task => pushActor(task?.assignee))
+    Object.values(doc?.mentions || {}).forEach(mention => {
+      pushActor(mention?.from_agent)
+      pushActor(mention?.to_agent)
+    })
+
+    return actors
+  }, [doc])
 
   const tasksByColumn = useMemo(() => {
     const all = Object.values(doc?.tasks || {})
@@ -124,15 +185,130 @@ export default function MissionControlSync() {
       if (e.key === 'Escape') {
         setSelectedTask(null)
         setShowNewTask(false)
+        setShowNotifications(false)
+        setNotificationsError(null)
       }
     }
     window.addEventListener('keydown', handleEsc)
     return () => window.removeEventListener('keydown', handleEsc)
   }, [])
 
+  useEffect(() => {
+    if (actorNames.length === 0) return
+    setCurrentUser((prev) => (actorNames.includes(prev) ? prev : actorNames[0]))
+  }, [actorNames])
+
+  useEffect(() => {
+    currentUserRef.current = currentUser
+  }, [currentUser])
+
+  useEffect(() => {
+    try {
+      if (currentUser) {
+        window.localStorage.setItem(CURRENT_USER_STORAGE_KEY, currentUser)
+      } else {
+        window.localStorage.removeItem(CURRENT_USER_STORAGE_KEY)
+      }
+    } catch {
+      // Ignore persistence failures in restricted browser environments.
+    }
+  }, [currentUser])
+
+  useEffect(() => {
+    setNotificationsError(null)
+    setReconciledPendingMentions(null)
+    setReconciledActor(null)
+  }, [currentUser])
+
+  useEffect(() => {
+    function handleOutsideClick(event) {
+      if (!showNotifications) return
+      if (notificationsRef.current && !notificationsRef.current.contains(event.target)) {
+        setShowNotifications(false)
+        setNotificationsError(null)
+      }
+    }
+    window.addEventListener('mousedown', handleOutsideClick)
+    return () => window.removeEventListener('mousedown', handleOutsideClick)
+  }, [showNotifications])
+
+  const pendingMentionsFromDoc = useMemo(() => {
+    if (!currentUser) return []
+    const nowMs = Date.now()
+    const pending = []
+    for (const mention of Object.values(doc?.mentions || {})) {
+      if (isMentionPendingForAgent(mention, currentUser, nowMs)) {
+        pending.push(mention)
+      }
+    }
+    if (pending.length > 1) {
+      pending.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp))
+    }
+    return pending
+  }, [doc, currentUser])
+
+  const fetchPendingMentions = useCallback(async (agent) => {
+    const requestId = ++pendingFetchIdRef.current
+    if (!agent) {
+      setReconciledPendingMentions(null)
+      setReconciledActor(null)
+      setNotificationsError(null)
+      return
+    }
+    try {
+      const data = await requestJson(
+        '',
+        `/mc-api/automerge/mentions/pending?agent=${encodeURIComponent(agent)}`,
+        { headers: withBearerAuthHeaders(API_TOKEN) }
+      )
+      if (requestId !== pendingFetchIdRef.current || currentUserRef.current !== agent) return
+      setReconciledPendingMentions(Array.isArray(data?.mentions) ? data.mentions : [])
+      setReconciledActor(agent)
+      setNotificationsError(null)
+    } catch {
+      if (requestId !== pendingFetchIdRef.current || currentUserRef.current !== agent) return
+      setReconciledPendingMentions(null)
+      setReconciledActor(null)
+      setNotificationsError('Pending mentions may be stale.')
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!connected || !currentUser) {
+      pendingFetchIdRef.current += 1
+      setReconciledPendingMentions(null)
+      setReconciledActor(null)
+      setNotificationsError(null)
+      return
+    }
+    fetchPendingMentions(currentUser)
+  }, [connected, currentUser, fetchPendingMentions])
+
+  useEffect(() => {
+    function handleVisibilityChange() {
+      if (document.visibilityState !== 'visible') return
+      if (!connected || !currentUser) return
+      fetchPendingMentions(currentUser)
+    }
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange)
+  }, [connected, currentUser, fetchPendingMentions])
+
+  const pendingMentions =
+    reconciledPendingMentions && reconciledActor === currentUser
+      ? reconciledPendingMentions
+      : pendingMentionsFromDoc
+
   const sendChange = useCallback((change) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: 'document-change', change, agent: 'depatched', timestamp: new Date().toISOString() }))
+      wsRef.current.send(
+        JSON.stringify({
+          type: 'document-change',
+          change,
+          agent: WRITE_ACTOR,
+          timestamp: new Date().toISOString(),
+        })
+      )
     }
   }, [])
   
@@ -150,7 +326,16 @@ export default function MissionControlSync() {
   }
   
   const addComment = (taskId, text) => {
-    sendChange({ type: 'comment-add', taskId, comment: { id: 'c-' + Math.random().toString(36).substr(2, 9), text, agent: 'depatched', timestamp: new Date().toISOString() } })
+    sendChange({
+      type: 'comment-add',
+      taskId,
+      comment: {
+        id: 'c-' + Math.random().toString(36).substr(2, 9),
+        text,
+        agent: WRITE_ACTOR,
+        timestamp: new Date().toISOString(),
+      },
+    })
   }
   
   const fetchTraceDetails = async (commitHash) => {
@@ -190,17 +375,91 @@ export default function MissionControlSync() {
     if (!lastSeen) return taskComments.length
     return taskComments.filter(c => new Date(c.timestamp) > new Date(lastSeen)).length
   }
+
+  const openMentionTask = (mention) => {
+    const task = doc?.tasks?.[mention.taskId]
+    if (!task) {
+      setNotificationsError(`Task ${mention.taskId} no longer exists.`)
+      return
+    }
+    setNotificationsError(null)
+    setSelectedTask(task)
+    setView('board')
+    setShowNotifications(false)
+  }
   
   return (
     <div style={styles.container}>
-      <header style={styles.header}>
+      <header style={styles.header} className="mc-header">
         <h1 style={styles.logo}>Mission Control</h1>
-        <div style={styles.headerMeta}>
+        <div style={styles.headerMeta} className="mc-header-meta">
           <span style={styles.stat}>{tasks.length} tasks</span>
+          <label style={styles.userPickerLabel}>
+            Actor
+            <select
+              style={styles.userPicker}
+              value={currentUser}
+              onChange={(e) => setCurrentUser(e.target.value)}
+              disabled={actorNames.length === 0}
+            >
+              {actorNames.length === 0 ? (
+                <option value="">No actors</option>
+              ) : (
+                actorNames.map(name => (
+                  <option key={name} value={name}>
+                    @{name}
+                  </option>
+                ))
+              )}
+            </select>
+          </label>
           <button style={{ ...styles.viewToggle, ...(view === 'activity' ? styles.viewToggleActive : {}) }}
             onClick={() => setView(view === 'board' ? 'activity' : 'board')}>
             {view === 'board' ? '📋 Activity' : '📊 Board'}
           </button>
+          <div style={styles.notificationsWrapper} ref={notificationsRef}>
+            <button
+              style={styles.notificationsBtn}
+              onClick={() => setShowNotifications(prev => !prev)}
+              disabled={!currentUser}
+              title={currentUser ? `Pending mentions for @${currentUser}` : 'Select a user'}
+            >
+              Mentions
+              {pendingMentions.length > 0 && (
+                <span style={styles.unreadBadge}>{pendingMentions.length}</span>
+              )}
+            </button>
+            {showNotifications && (
+              <div style={styles.notificationsPanel}>
+                <div style={styles.notificationsHeader}>
+                  <span style={styles.sectionTitle}>Pending for actor @{currentUser}</span>
+                </div>
+                {pendingMentions.length === 0 ? (
+                  <p style={styles.notificationsEmpty}>No pending mentions.</p>
+                ) : (
+                  <div style={styles.notificationsList}>
+                    {pendingMentions.map((mention) => (
+                      <button
+                        key={mention.id}
+                        style={styles.notificationsItem}
+                        onClick={() => openMentionTask(mention)}
+                      >
+                        <div style={styles.notificationsItemTop}>
+                          <span style={styles.commentAuthor}>@{mention.from_agent}</span>
+                          <span style={styles.commentTime}>Task {mention.taskId}</span>
+                          <span style={styles.commentTimeRight}>{formatRelativeTime(mention.timestamp)}</span>
+                        </div>
+                        <div style={styles.activityEntryDetails}>
+                          {(mention.content || '').slice(0, 120)}
+                          {mention.content && mention.content.length > 120 ? '...' : ''}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
           <span style={{ ...styles.connectionDot, background: connected ? '#10b981' : '#ef4444' }} />
           <button className="mc-header-add" style={styles.addBtn} onClick={() => setShowNewTask(true)}>+ New</button>
         </div>
@@ -209,6 +468,11 @@ export default function MissionControlSync() {
       {error && (
         <div style={styles.errorBanner}>
           {error}
+        </div>
+      )}
+      {notificationsError && (
+        <div style={styles.errorBanner}>
+          {notificationsError}
         </div>
       )}
       
@@ -944,8 +1208,18 @@ const styles = {
   
   header: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 20px', borderBottom: '1px solid #1a1a1a', position: 'sticky', top: 0, background: '#0a0a0a', zIndex: 50 },
   logo: { fontSize: 18, fontWeight: 600, color: '#fff', margin: 0 },
-  headerMeta: { display: 'flex', alignItems: 'center', gap: 16 },
+  headerMeta: { display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', justifyContent: 'flex-end' },
   stat: { fontSize: 13, color: '#666' },
+  userPickerLabel: { display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#666' },
+  userPicker: { background: '#111', border: '1px solid #333', borderRadius: 6, color: '#e5e5e5', padding: '6px 8px', fontSize: 12, maxWidth: 150 },
+  notificationsWrapper: { position: 'relative' },
+  notificationsBtn: { display: 'flex', alignItems: 'center', gap: 8, background: '#1a1a1a', border: '1px solid #333', color: '#cfcfcf', borderRadius: 6, padding: '6px 10px', fontSize: 12, cursor: 'pointer' },
+  notificationsPanel: { position: 'absolute', top: 'calc(100% + 8px)', right: 0, width: 'min(360px, calc(100vw - 24px))', maxHeight: 380, overflow: 'auto', background: '#111', border: '1px solid #333', borderRadius: 10, padding: 10, boxShadow: '0 10px 30px rgba(0,0,0,0.45)', zIndex: 80 },
+  notificationsHeader: { padding: '4px 4px 8px', borderBottom: '1px solid #222', marginBottom: 8 },
+  notificationsList: { display: 'flex', flexDirection: 'column', gap: 8 },
+  notificationsItem: { textAlign: 'left', background: '#0a0a0a', border: '1px solid #222', borderRadius: 8, padding: 10, cursor: 'pointer', color: '#e5e5e5' },
+  notificationsItemTop: { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 },
+  notificationsEmpty: { margin: 0, fontSize: 13, color: '#666', padding: '8px 4px' },
   connectionDot: { width: 8, height: 8, borderRadius: '50%' },
   addBtn: { background: '#fff', color: '#0a0a0a', border: 'none', borderRadius: 6, padding: '8px 14px', fontSize: 13, fontWeight: 500, cursor: 'pointer' },
   errorBanner: { margin: '12px 20px 0', padding: '10px 12px', borderRadius: 8, border: '1px solid #ef4444', color: '#fecaca', background: 'rgba(127, 29, 29, 0.35)', fontSize: 13 },
@@ -1130,6 +1404,9 @@ if (!document.getElementById('mc-styles')) {
     
     /* Mobile styles */
     @media (max-width: 767px) {
+      .mc-header { align-items: flex-start; }
+      .mc-header-meta { max-width: 100%; gap: 8px; }
+      .mc-header-meta > * { flex-shrink: 0; }
       .mc-column-collapsed { max-height: 48px; overflow: hidden; }
       /* Mobile tabs for columns */
       .mc-mobile-tabs { display: flex; overflow-x: auto; border-bottom: 1px solid #1a1a1a; -webkit-overflow-scrolling: touch; }
