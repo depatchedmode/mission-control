@@ -6,3 +6,4 @@ node_modules/
 ui-prototype/node_modules/
 ui-prototype/dist/
 .env
+.cursor/hooks/state/
