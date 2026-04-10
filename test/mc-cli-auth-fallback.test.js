@@ -327,8 +327,8 @@ describe('mc CLI supported runtime enforcement', () => {
     const result = await runCli(cwd, ['commit', '--task', 'task-123', '-m', 'happy path commit'], {
       MC_SYNC_SERVER: baseUrl,
       MC_AGENT: 'gary',
-      OPENCLAW_MODEL: 'gpt-5.4',
-      OPENCLAW_SESSION_KEY: 'session-123',
+      MC_AGENT_MODEL: 'gpt-5.4',
+      MC_AGENT_SESSION_KEY: 'session-123',
     })
 
     assert.equal(result.status, 0)

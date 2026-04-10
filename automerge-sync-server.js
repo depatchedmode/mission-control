@@ -4,7 +4,7 @@
  * Automerge Sync Server
  *
  * HTTP/WebSocket hub for the current Mission Control deployment.
- * CLI, daemon, and UI clients talk to this process.
+ * CLI, external harnesses, and UI clients talk to this process.
  */
 
 import { WebSocketServer } from 'ws'
@@ -65,6 +65,10 @@ function getBearerToken(authorizationHeader = '') {
   return authorizationHeader.slice('Bearer '.length).trim()
 }
 
+function isNonEmptyString(value) {
+  return typeof value === 'string' && value.trim().length > 0
+}
+
 class AutomergeSyncServer {
   constructor(options = {}) {
     const env = options.env ?? process.env
@@ -73,6 +77,8 @@ class AutomergeSyncServer {
     if (options.storagePath !== undefined) storeOptions.storagePath = options.storagePath
     if (options.urlFile !== undefined) storeOptions.urlFile = options.urlFile
     if (options.usePersistedUrl !== undefined) storeOptions.usePersistedUrl = options.usePersistedUrl
+    if (options.mentionClaimTtlMs !== undefined) storeOptions.mentionClaimTtlMs = options.mentionClaimTtlMs
+    storeOptions.env = env
     if (options.logger !== undefined) storeOptions.logger = this.logger
 
     this.store = options.store || new AutomergeStore(storeOptions)
@@ -349,9 +355,55 @@ class AutomergeSyncServer {
     this.app.post('/automerge/mentions/:id/deliver', async (req, res) => {
       try {
         const mentionId = req.params.id
-        await this.store.markMentionDelivered(mentionId)
-        this.broadcastDocumentUpdate()
-        res.json({ success: true, mentionId })
+        const { claimToken } = req.body
+        if (!isNonEmptyString(claimToken)) {
+          return res.status(400).json({ error: 'claimToken is required' })
+        }
+
+        const result = await this.store.markMentionDelivered(mentionId, claimToken)
+        if (result.staleClaim) {
+          return res.status(409).json({ error: 'Claim token mismatch' })
+        }
+        if (result.delivered) {
+          this.broadcastDocumentUpdate()
+        }
+        res.json({ success: true, mentionId, delivered: result.delivered })
+      } catch (error) {
+        res.status(500).json({ error: error.message })
+      }
+    })
+
+    // Claim a mention before delivery so duplicate poll cycles do not re-send it.
+    this.app.post('/automerge/mentions/:id/claim', async (req, res) => {
+      try {
+        const mentionId = req.params.id
+        const result = await this.store.claimMentionDelivery(mentionId)
+        if (result.claimed) {
+          this.broadcastDocumentUpdate()
+        }
+        res.json({ success: true, mentionId, ...result })
+      } catch (error) {
+        res.status(500).json({ error: error.message })
+      }
+    })
+
+    // Release a failed delivery attempt so the mention becomes pending again.
+    this.app.post('/automerge/mentions/:id/release', async (req, res) => {
+      try {
+        const mentionId = req.params.id
+        const { claimToken, error: releaseError } = req.body
+        if (!isNonEmptyString(claimToken)) {
+          return res.status(400).json({ error: 'claimToken is required' })
+        }
+
+        const result = await this.store.releaseMentionDelivery(mentionId, claimToken, releaseError)
+        if (result.staleClaim) {
+          return res.status(409).json({ error: 'Claim token mismatch' })
+        }
+        if (result.released) {
+          this.broadcastDocumentUpdate()
+        }
+        res.json({ success: true, mentionId, released: result.released })
       } catch (error) {
         res.status(500).json({ error: error.message })
       }
@@ -561,15 +613,15 @@ class AutomergeSyncServer {
     // Register agent
     this.app.post('/automerge/agent', async (req, res) => {
       try {
-        const { name, sessionKey, role } = req.body
-        if (!name || !sessionKey) {
-          return res.status(400).json({ error: 'Name and sessionKey are required' })
+        const { name, role } = req.body ?? {}
+        if (!isNonEmptyString(name)) {
+          return res.status(400).json({ error: 'name is required' })
         }
-        
-        await this.store.registerAgent(name, sessionKey, role || 'Agent')
+
+        await this.store.registerAgent(name.trim(), role || 'Agent')
         this.broadcastDocumentUpdate()
         
-        res.json({ success: true, name })
+        res.json({ success: true, name: name.trim() })
       } catch (error) {
         res.status(500).json({ error: error.message })
       }
@@ -924,9 +976,9 @@ class AutomergeSyncServer {
       }
       
       // Register default agents
-      await this.store.registerAgent('gary', 'agent:main:main', 'Lead')
-      await this.store.registerAgent('friday', 'agent:developer:main', 'Developer')
-      await this.store.registerAgent('writer', 'agent:writer:main', 'Content Writer')
+      await this.store.registerAgent('gary', 'Lead')
+      await this.store.registerAgent('friday', 'Developer')
+      await this.store.registerAgent('writer', 'Content Writer')
       
       this.logger.log?.('✅ Default agents registered')
     } catch (error) {

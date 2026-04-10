@@ -240,10 +240,10 @@ describe('createTrace', () => {
   
   it('uses environment variables as fallback', () => {
     const originalAgent = process.env.MC_AGENT;
-    const originalModel = process.env.OPENCLAW_MODEL;
+    const originalModel = process.env.MC_AGENT_MODEL;
     
     process.env.MC_AGENT = 'env-agent';
-    process.env.OPENCLAW_MODEL = 'env-model';
+    process.env.MC_AGENT_MODEL = 'env-model';
     
     try {
       const { trace } = agentTrace.createTrace({
@@ -260,8 +260,33 @@ describe('createTrace', () => {
       // Restore
       if (originalAgent) process.env.MC_AGENT = originalAgent;
       else delete process.env.MC_AGENT;
+      if (originalModel) process.env.MC_AGENT_MODEL = originalModel;
+      else delete process.env.MC_AGENT_MODEL;
+    }
+  });
+
+  it('supports legacy OpenClaw environment aliases for compatibility', () => {
+    const originalModel = process.env.OPENCLAW_MODEL;
+    const originalSessionKey = process.env.OPENCLAW_SESSION_KEY;
+
+    process.env.OPENCLAW_MODEL = 'legacy-model';
+    process.env.OPENCLAW_SESSION_KEY = 'legacy-session';
+
+    try {
+      const { trace } = agentTrace.createTrace({
+        repoPath: testRepoPath,
+        commitHash: 'abc456',
+        commitMessage: 'Legacy env test',
+        commitAuthor: 'Test <test@test.com>',
+      });
+
+      assert.strictEqual(trace.agent.model, 'legacy-model');
+      assert.strictEqual(trace.agent.sessionKey, 'legacy-session');
+    } finally {
       if (originalModel) process.env.OPENCLAW_MODEL = originalModel;
       else delete process.env.OPENCLAW_MODEL;
+      if (originalSessionKey) process.env.OPENCLAW_SESSION_KEY = originalSessionKey;
+      else delete process.env.OPENCLAW_SESSION_KEY;
     }
   });
 });

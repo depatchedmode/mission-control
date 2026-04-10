@@ -30,7 +30,7 @@ This section describes **product intent**. The **Current implementation** sectio
 
 ## Current implementation
 
-What ships in **this repository today** is a **hub-and-spoke** deployment: a **sync server** holds the Automerge document, applies mutations, and **broadcasts document snapshots** to connected WebSocket clients. The **CLI** and **daemon** talk to that server over **HTTP** only (no offline CLI path).
+What ships in **this repository today** is a **hub-and-spoke** deployment: a **sync server** holds the Automerge document, applies mutations, and **broadcasts document snapshots** to connected WebSocket clients. The **CLI** and any **external agent harnesses** talk to that server over **HTTP** only (no offline CLI path).
 
 **This topology is the current supported runtime. Peer-to-peer replica sync (with partitions and automatic merge between replicas) is a product goal—not yet implemented here.**
 
@@ -60,13 +60,12 @@ What ships in **this repository today** is a **hub-and-spoke** deployment: a **s
 | **mc CLI** | `bin/mc.js` | Primary interface for task management (HTTP client to sync server) |
 | **Automerge Store** | `lib/automerge-store.js` | Persistence + CRDT document logic (used by the sync server) |
 | **Sync Server** | `automerge-sync-server.js` | HTTP + WebSocket **hub** for the current deployment |
-| **Notification Daemon** | `daemon/index.js` | Mention-delivery worker (OpenClaw-oriented) |
 | **UI Dev Client** | `ui-prototype/src/MissionControlSync.jsx` | Supported **development** UI client |
 
 ### Current supported runtime
 
 1. Start `automerge-sync-server.js` (HTTP + WebSocket).
-2. Point CLI and daemon at that server (`MC_SYNC_SERVER` or `MC_HTTP_PORT`).
+2. Point the CLI and any external agent harnesses at that server (`MC_SYNC_SERVER` or `MC_HTTP_PORT`).
 3. Run the UI through the Vite dev server proxy (`/mc-api` + `/mc-ws`).
 
 **Note:** Anything that bypasses the sync server—including **direct `AutomergeStore` access from CLI workflows**—is **not** a supported runtime path for the shipped CLI.
@@ -95,8 +94,12 @@ mc update <task-id> [options]                 # Update task
 mc comment <task-id> "message"    # Add comment (use @name to mention)
 mc comments <task-id>             # List task comments
 mc comment-delete <comment-id>    # Delete a comment by ID
-mc mentions pending [--agent <name>]   # Pending @mentions (optional filter)
+mc mentions pending [--agent <name>] [--json]         # Pending @mentions
 mc mentions <agent>               # Same pool, filter by agent (positional)
+mc mentions claim <mention-id> [--json]               # Claim a mention lease
+mc mentions claim-next --agent <name> [--json]        # Claim the next mention
+mc mentions ack <mention-id> --claim-token <token>    # Mark delivered
+mc mentions release <mention-id> --claim-token <token> [--error <msg>] [--json]
 mc activity [--limit <n>]         # Activity feed
 mc agents list                    # List registered agents
 ```
@@ -124,6 +127,23 @@ mc trace task <task-id>           # Commits linked to a task
 
 See [docs/AGENT-TRACE.md](docs/AGENT-TRACE.md) for full documentation.
 
+## Mention Workflow
+
+Mission Control no longer shells out to agent runtimes. External harnesses should poll and advance mention leases through `mc`.
+
+```bash
+# Get work for one agent
+mc mentions claim-next --agent gary --json
+
+# If delivery succeeds, acknowledge it
+mc mentions ack <mention-id> --claim-token <token> --json
+
+# If delivery fails, release it for retry
+mc mentions release <mention-id> --claim-token <token> --error "transport failed" --json
+```
+
+`MC_MENTION_CLAIM_TTL_MS` controls how long a claim stays hidden from other pollers before it becomes pending again.
+
 ## Quick Start
 
 ```bash
@@ -150,8 +170,11 @@ MC_API_TOKEN="$MC_API_TOKEN" mc comment <task-id> "Working on this now"
 # Check activity
 MC_API_TOKEN="$MC_API_TOKEN" mc activity --limit 10
 
-# Optional workers/clients
-MC_API_TOKEN="$MC_API_TOKEN" npm run daemon
+# Optional external harness flow
+MC_API_TOKEN="$MC_API_TOKEN" mc mentions claim-next --agent gary --json
+MC_API_TOKEN="$MC_API_TOKEN" mc mentions ack <mention-id> --claim-token <token> --json
+
+# Optional UI client
 VITE_MC_API_TOKEN="$MC_API_TOKEN" npm run dev --prefix ui-prototype
 ```
 
@@ -169,7 +192,7 @@ Binary CRDT data lives under a `.mission-control/` directory.
 {
   tasks: { [id]: Task },           // Task objects
   comments: { [id]: Comment },     // Comment threads
-  mentions: { [id]: Mention },     // @mention tracking
+  mentions: { [id]: Mention },     // @mention tracking + lease metadata
   agents: { [name]: Agent },       // Agent registry
   activity: Activity[],            // Activity feed
   taskHistory: { [id]: Change[] }  // Patchwork history
@@ -189,9 +212,8 @@ export MC_API_TOKEN="$(openssl rand -hex 32)"
 # Start server (binds to 127.0.0.1 by default)
 MC_API_TOKEN="$MC_API_TOKEN" npm run sync
 
-# Use CLI/daemon with the same token
+# Use the CLI or any harness wrapper with the same token
 MC_API_TOKEN="$MC_API_TOKEN" mc tasks
-MC_API_TOKEN="$MC_API_TOKEN" npm run daemon
 ```
 
 Optional environment settings:
@@ -199,8 +221,9 @@ Optional environment settings:
 - `MC_BIND_HOST` (default `127.0.0.1`)
 - `MC_HTTP_PORT` (default `8004`)
 - `MC_WS_PORT` (default `8005`)
-- `MC_SYNC_SERVER` (CLI/daemon API base URL override, e.g. `http://127.0.0.1:9000`)
+- `MC_SYNC_SERVER` (CLI/harness API base URL override, e.g. `http://127.0.0.1:9000`)
 - `MC_STORAGE_PATH` (optional directory; store uses `$MC_STORAGE_PATH/.mission-control` and nested `document-url` as above)
+- `MC_MENTION_CLAIM_TTL_MS` (optional lease length for mention delivery claims; default `30000`)
 - `MC_ALLOW_INSECURE_LOCAL=1` (disables auth; local testing only)
 
 For the Vite UI, set `VITE_MC_API_TOKEN` in `ui-prototype/.env.local`. The UI exchanges that token for a short-lived one-time WebSocket ticket via `/mc-api/automerge/ws-ticket`, so long-lived tokens are not placed in WS URLs.
@@ -210,8 +233,8 @@ Optional compatibility setting:
 
 Behavior notes:
 - Browser requests with an `Origin` header must match `MC_ALLOWED_ORIGINS`. Allowed preflight `OPTIONS` requests receive the same allowlisted CORS headers; disallowed origins are rejected with `403`.
-- Originless non-browser requests (for example CLI and daemon traffic) are allowed and still require auth unless `MC_ALLOW_INSECURE_LOCAL=1` is set.
-- CLI and daemon commands fail fast when the sync server is unreachable; they do not fall back to direct local-store access.
+- Originless non-browser requests (for example CLI and harness traffic) are allowed and still require auth unless `MC_ALLOW_INSECURE_LOCAL=1` is set.
+- CLI commands and any harnesses that wrap them fail fast when the sync server is unreachable; they do not fall back to direct local-store access.
 - The sync server logs rejected auth/origin checks with a `[security]` prefix and keeps in-memory counters for HTTP and WebSocket rejections. Those counters are available on the server instance (used by integration tests and any embedder); they are **not** exposed as a public HTTP API.
 
 ## Development
@@ -272,7 +295,7 @@ Aligned with **Direction** above, plus practical polish:
 - **Capability-gated mutations** with **cryptographically bound** identity
 - **Richer co-editing** (staged after presence); likely layered on top of local-first state
 - Productionize UI deployment (repo ships a **development** client)
-- `--json` output for CLI scripting
+- Broader `--json` output coverage beyond mention orchestration
 - Timestamp tracking for stale task detection
 - Backup / export
 - UI timeline visualization, diff viewer, branch management

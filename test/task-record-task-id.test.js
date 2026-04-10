@@ -1,10 +1,18 @@
 #!/usr/bin/env node
 import { after, before, describe, it } from 'node:test'
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
+import { setTimeout as delay } from 'node:timers/promises'
 
 import { AutomergeStore } from '../lib/automerge-store.js'
 import { taskRecordTaskId } from '../lib/task-record-task-id.js'
 import { cleanupTempDir, createTempDir, noopLogger } from '../support/resources.js'
+
+function expectedIdempotencyKey(commentId, toAgent) {
+  return createHash('sha256')
+    .update(`${commentId}:${toAgent.toLowerCase()}`)
+    .digest('hex')
+}
 
 describe('taskRecordTaskId', () => {
   it('prefers taskId when both are present', () => {
@@ -49,6 +57,7 @@ describe('AutomergeStore comment and mention task field normalization', () => {
   after(async () => {
     try {
       if (store) await store.close()
+      await delay(25)
     } finally {
       cleanupTempDir(storagePath)
     }
@@ -68,6 +77,10 @@ describe('AutomergeStore comment and mention task field normalization', () => {
     assert.ok(mention, 'mention exists')
     assert.equal(mention.taskId, 'task-1')
     assert.ok(!('task_id' in mention))
+    assert.equal(
+      mention.idempotency_key,
+      expectedIdempotencyKey(comment.id, mention.to_agent)
+    )
   })
 
   it('normalizes legacy task_id comment and mention records on read', async () => {
@@ -109,9 +122,45 @@ describe('AutomergeStore comment and mention task field normalization', () => {
     assert.ok(!('task_id' in doc.comments['legacy-comment']))
     assert.equal(doc.mentions['legacy-mention'].taskId, 'task-1')
     assert.ok(!('task_id' in doc.mentions['legacy-mention']))
+    assert.equal(
+      doc.mentions['legacy-mention'].idempotency_key,
+      expectedIdempotencyKey('legacy-comment', 'legacy-reviewer')
+    )
 
     const rawDoc = store.docHandle.doc()
     assert.equal(rawDoc.comments['legacy-comment'].task_id, 'task-1')
     assert.equal(rawDoc.mentions['legacy-mention'].task_id, 'task-1')
+    assert.ok(!('idempotency_key' in rawDoc.mentions['legacy-mention']))
+  })
+
+  it('synthesizes idempotency keys for legacy mentions on read without mutating storage', async () => {
+    await store.docHandle.change(doc => {
+      doc.mentions['legacy-mention-no-key'] = {
+        id: 'legacy-mention-no-key',
+        comment_id: 'legacy-comment-no-key',
+        task_id: 'task-1',
+        from_agent: 'legacy-agent',
+        to_agent: 'legacy-reviewer-no-key',
+        content: 'legacy comment without key',
+        delivered: false,
+        timestamp: new Date().toISOString()
+      }
+    })
+
+    const expectedKey = expectedIdempotencyKey(
+      'legacy-comment-no-key',
+      'legacy-reviewer-no-key'
+    )
+    const mentions = await store.getPendingMentions('legacy-reviewer-no-key')
+    const legacyMention = mentions.find(mention => mention.id === 'legacy-mention-no-key')
+
+    assert.ok(legacyMention, 'legacy mention is returned')
+    assert.equal(legacyMention.idempotency_key, expectedKey)
+
+    const doc = store.getDoc()
+    assert.equal(doc.mentions['legacy-mention-no-key'].idempotency_key, expectedKey)
+
+    const rawDoc = store.docHandle.doc()
+    assert.ok(!('idempotency_key' in rawDoc.mentions['legacy-mention-no-key']))
   })
 })
