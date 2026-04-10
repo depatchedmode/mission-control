@@ -103,6 +103,9 @@ export default function MissionControlSync() {
   const notificationsRef = useRef(null)
   const currentUserRef = useRef(currentUser)
   const pendingFetchIdRef = useRef(0)
+  // The reconnect timer reuses this callback, so gate the full-page spinner
+  // on whether we have ever received a document, not on stale render state.
+  const hasReceivedDocRef = useRef(false)
 
   const actorNames = useMemo(() => {
     const seen = new Set()
@@ -139,7 +142,8 @@ export default function MissionControlSync() {
   }, [doc])
 
   const connectToSyncServer = useCallback(async () => {
-    setLoading(true)
+    setError(null)
+    if (!hasReceivedDocRef.current) setLoading(true)
     if (wsRef.current) wsRef.current.close()
     try {
       const wsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:'
@@ -151,8 +155,16 @@ export default function MissionControlSync() {
         setError(null)
       }
       ws.onmessage = (event) => {
-        const message = JSON.parse(event.data)
+        let message
+        try {
+          message = JSON.parse(event.data)
+        } catch {
+          setError('Invalid sync message from server')
+          if (!hasReceivedDocRef.current) setLoading(false)
+          return
+        }
         if (message.type === 'document-state' || message.type === 'document-update') {
+          hasReceivedDocRef.current = true
           setDoc(message.doc)
           setLoading(false)
           setSelectedTask((prev) => {
@@ -166,7 +178,10 @@ export default function MissionControlSync() {
         setConnected(false)
         setTimeout(connectToSyncServer, 3000)
       }
-      ws.onerror = () => setError('Connection failed')
+      ws.onerror = () => {
+        setError('Connection failed')
+        if (!hasReceivedDocRef.current) setLoading(false)
+      }
     } catch (err) {
       setError(err.message)
       setLoading(false)
@@ -359,7 +374,17 @@ export default function MissionControlSync() {
   }
   
   if (loading) return <div style={styles.centered}><div style={styles.spinner} /><p style={styles.loadingText}>Connecting...</p></div>
-  if (!doc) return <div style={styles.centered}><p style={styles.loadingText}>Loading...</p></div>
+  if (!doc) {
+    if (error) {
+      return (
+        <div style={styles.centered}>
+          <p style={{ ...styles.loadingText, color: '#fecaca', marginBottom: 16 }}>{error}</p>
+          <button type="button" style={styles.btnPrimary} onClick={() => connectToSyncServer()}>Retry</button>
+        </div>
+      )
+    }
+    return <div style={styles.centered}><p style={styles.loadingText}>Loading...</p></div>
+  }
   
   const tasks = Object.values(doc.tasks || {})
   const agents = Object.values(doc.agents || {})
