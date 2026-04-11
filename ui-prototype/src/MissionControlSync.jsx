@@ -1,10 +1,12 @@
 import { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
-import { requestJson, withBearerAuthHeaders } from '../../lib/sync-client.js'
+import { requestJson, withBearerAuthHeaders, SyncRequestError } from '../../lib/sync-client.js'
 import { activityTaskId } from '../../lib/activity-task-id.js'
 
 const REMARK_GFM_PLUGINS = [remarkGfm]
+const CURRENT_USER_STORAGE_KEY = 'mc-current-user'
+const WRITE_ACTOR = import.meta.env.VITE_MC_WRITE_ACTOR || 'depatched'
 
 // Global lastSeen map (current single-operator prototype; stored in the shared Automerge doc)
 const API_TOKEN = import.meta.env.VITE_MC_API_TOKEN || null
@@ -43,6 +45,44 @@ function formatRelativeTime(ts) {
   return d.toLocaleDateString()
 }
 
+function parseIsoTimestampMs(value) {
+  if (typeof value !== 'string' || !value) return null
+  const parsed = Date.parse(value)
+  return Number.isFinite(parsed) ? parsed : null
+}
+
+function CommitHashButton({ shortHash, fullHash, onOpenTrace }) {
+  const label = shortHash || (fullHash ? fullHash.slice(0, 7) : 'commit')
+  return (
+    <button
+      type="button"
+      style={styles.commitHashBtn}
+      onClick={(e) => {
+        e.stopPropagation()
+        onOpenTrace(fullHash)
+      }}
+      title="View agent trace for this commit"
+      aria-label={`View agent trace for commit ${label}`}
+    >
+      {shortHash}
+    </button>
+  )
+}
+
+function isMentionPendingForAgent(mention, agent, nowMs = Date.now()) {
+  if (!mention || typeof mention !== 'object') return false
+  if (mention.delivered) return false
+  if (typeof mention.to_agent !== 'string') return false
+  if (mention.to_agent.toLowerCase() !== agent.toLowerCase()) return false
+
+  const hasClaimToken = typeof mention.delivery_claim_token === 'string' && mention.delivery_claim_token
+  if (!hasClaimToken) return true
+
+  const claimExpiryMs = parseIsoTimestampMs(mention.delivery_claim_expires_at)
+  if (claimExpiryMs === null) return true
+  return claimExpiryMs <= nowMs
+}
+
 async function requestWebSocketTicket() {
   const payload = await requestJson('', '/mc-api/automerge/ws-ticket', {
     method: 'POST',
@@ -62,13 +102,57 @@ export default function MissionControlSync() {
   const [error, setError] = useState(null)
   const [showNewTask, setShowNewTask] = useState(false)
   const [selectedTask, setSelectedTask] = useState(null)
+  const [selectedTrace, setSelectedTrace] = useState(null)
   const [draggedTask, setDraggedTask] = useState(null)
   const [mobileActiveColumn, setMobileActiveColumn] = useState('in-progress')
   const [view, setView] = useState('board') // 'board' or 'activity'
+  const [currentUser, setCurrentUser] = useState(() => {
+    try {
+      return window.localStorage.getItem(CURRENT_USER_STORAGE_KEY) || ''
+    } catch {
+      return ''
+    }
+  })
+  const [showNotifications, setShowNotifications] = useState(false)
+  const [reconciledPendingMentions, setReconciledPendingMentions] = useState(null)
+  const [reconciledActor, setReconciledActor] = useState(null)
+  const [notificationsError, setNotificationsError] = useState(null)
+  const [traceFetchError, setTraceFetchError] = useState(null)
+  const traceFetchAbortRef = useRef(null)
+  const traceFetchRequestIdRef = useRef(0)
+
   const wsRef = useRef(null)
+  const notificationsRef = useRef(null)
+  const currentUserRef = useRef(currentUser)
+  const pendingFetchIdRef = useRef(0)
   // The reconnect timer reuses this callback, so gate the full-page spinner
   // on whether we have ever received a document, not on stale render state.
   const hasReceivedDocRef = useRef(false)
+
+  const actorNames = useMemo(() => {
+    const seen = new Set()
+    const actors = []
+
+    const pushActor = (value) => {
+      if (typeof value !== 'string') return
+      const trimmed = value.trim()
+      if (!trimmed) return
+      const key = trimmed.toLowerCase()
+      if (seen.has(key)) return
+      seen.add(key)
+      actors.push(trimmed)
+    }
+
+    Object.values(doc?.agents || {}).forEach(agent => pushActor(agent?.name))
+    Object.values(doc?.comments || {}).forEach(comment => pushActor(comment?.agent))
+    Object.values(doc?.tasks || {}).forEach(task => pushActor(task?.assignee))
+    Object.values(doc?.mentions || {}).forEach(mention => {
+      pushActor(mention?.from_agent)
+      pushActor(mention?.to_agent)
+    })
+
+    return actors
+  }, [doc])
 
   const tasksByColumn = useMemo(() => {
     const all = Object.values(doc?.tasks || {})
@@ -138,15 +222,131 @@ export default function MissionControlSync() {
       if (e.key === 'Escape') {
         setSelectedTask(null)
         setShowNewTask(false)
+        setShowNotifications(false)
+        setNotificationsError(null)
+        setTraceFetchError(null)
       }
     }
     window.addEventListener('keydown', handleEsc)
     return () => window.removeEventListener('keydown', handleEsc)
   }, [])
 
+  useEffect(() => {
+    if (actorNames.length === 0) return
+    setCurrentUser((prev) => (actorNames.includes(prev) ? prev : actorNames[0]))
+  }, [actorNames])
+
+  useEffect(() => {
+    currentUserRef.current = currentUser
+  }, [currentUser])
+
+  useEffect(() => {
+    try {
+      if (currentUser) {
+        window.localStorage.setItem(CURRENT_USER_STORAGE_KEY, currentUser)
+      } else {
+        window.localStorage.removeItem(CURRENT_USER_STORAGE_KEY)
+      }
+    } catch {
+      // Ignore persistence failures in restricted browser environments.
+    }
+  }, [currentUser])
+
+  useEffect(() => {
+    setNotificationsError(null)
+    setReconciledPendingMentions(null)
+    setReconciledActor(null)
+  }, [currentUser])
+
+  useEffect(() => {
+    function handleOutsideClick(event) {
+      if (!showNotifications) return
+      if (notificationsRef.current && !notificationsRef.current.contains(event.target)) {
+        setShowNotifications(false)
+        setNotificationsError(null)
+      }
+    }
+    window.addEventListener('mousedown', handleOutsideClick)
+    return () => window.removeEventListener('mousedown', handleOutsideClick)
+  }, [showNotifications])
+
+  const pendingMentionsFromDoc = useMemo(() => {
+    if (!currentUser) return []
+    const nowMs = Date.now()
+    const pending = []
+    for (const mention of Object.values(doc?.mentions || {})) {
+      if (isMentionPendingForAgent(mention, currentUser, nowMs)) {
+        pending.push(mention)
+      }
+    }
+    if (pending.length > 1) {
+      pending.sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp))
+    }
+    return pending
+  }, [doc, currentUser])
+
+  const fetchPendingMentions = useCallback(async (agent) => {
+    const requestId = ++pendingFetchIdRef.current
+    if (!agent) {
+      setReconciledPendingMentions(null)
+      setReconciledActor(null)
+      setNotificationsError(null)
+      return
+    }
+    try {
+      const data = await requestJson(
+        '',
+        `/mc-api/automerge/mentions/pending?agent=${encodeURIComponent(agent)}`,
+        { headers: withBearerAuthHeaders(API_TOKEN) }
+      )
+      if (requestId !== pendingFetchIdRef.current || currentUserRef.current !== agent) return
+      setReconciledPendingMentions(Array.isArray(data?.mentions) ? data.mentions : [])
+      setReconciledActor(agent)
+      setNotificationsError(null)
+    } catch {
+      if (requestId !== pendingFetchIdRef.current || currentUserRef.current !== agent) return
+      setReconciledPendingMentions(null)
+      setReconciledActor(null)
+      setNotificationsError('Pending mentions may be stale.')
+    }
+  }, [])
+
+  useEffect(() => {
+    if (!connected || !currentUser) {
+      pendingFetchIdRef.current += 1
+      setReconciledPendingMentions(null)
+      setReconciledActor(null)
+      setNotificationsError(null)
+      return
+    }
+    fetchPendingMentions(currentUser)
+  }, [connected, currentUser, fetchPendingMentions])
+
+  useEffect(() => {
+    function handleVisibilityChange() {
+      if (document.visibilityState !== 'visible') return
+      if (!connected || !currentUser) return
+      fetchPendingMentions(currentUser)
+    }
+    document.addEventListener('visibilitychange', handleVisibilityChange)
+    return () => document.removeEventListener('visibilitychange', handleVisibilityChange)
+  }, [connected, currentUser, fetchPendingMentions])
+
+  const pendingMentions =
+    reconciledPendingMentions && reconciledActor === currentUser
+      ? reconciledPendingMentions
+      : pendingMentionsFromDoc
+
   const sendChange = useCallback((change) => {
     if (wsRef.current?.readyState === WebSocket.OPEN) {
-      wsRef.current.send(JSON.stringify({ type: 'document-change', change, agent: 'depatched', timestamp: new Date().toISOString() }))
+      wsRef.current.send(
+        JSON.stringify({
+          type: 'document-change',
+          change,
+          agent: WRITE_ACTOR,
+          timestamp: new Date().toISOString(),
+        })
+      )
     }
   }, [])
   
@@ -164,8 +364,53 @@ export default function MissionControlSync() {
   }
   
   const addComment = (taskId, text) => {
-    sendChange({ type: 'comment-add', taskId, comment: { id: 'c-' + Math.random().toString(36).substr(2, 9), text, agent: 'depatched', timestamp: new Date().toISOString() } })
+    sendChange({
+      type: 'comment-add',
+      taskId,
+      comment: {
+        id: 'c-' + Math.random().toString(36).substr(2, 9),
+        text,
+        agent: WRITE_ACTOR,
+        timestamp: new Date().toISOString(),
+      },
+    })
   }
+  
+  const fetchTraceDetails = useCallback(async (commitHash) => {
+    traceFetchAbortRef.current?.abort()
+    const controller = new AbortController()
+    traceFetchAbortRef.current = controller
+    const requestId = ++traceFetchRequestIdRef.current
+    setTraceFetchError(null)
+    try {
+      const data = await requestJson('', `/mc-api/automerge/trace/${encodeURIComponent(commitHash)}`, {
+        token: API_TOKEN,
+        signal: controller.signal,
+      })
+      if (requestId !== traceFetchRequestIdRef.current) return
+      if (data.success) {
+        setSelectedTrace(data)
+        return
+      }
+      setTraceFetchError(
+        typeof data.error === 'string' ? data.error : 'Could not load trace for this commit.'
+      )
+    } catch (error) {
+      if (error?.name === 'AbortError') return
+      if (requestId !== traceFetchRequestIdRef.current) return
+      const message =
+        error instanceof SyncRequestError
+          ? error.message
+          : 'Could not load trace for this commit.'
+      setTraceFetchError(message)
+    }
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      traceFetchAbortRef.current?.abort()
+    }
+  }, [])
   
   const handleDrop = (taskId, newStatus) => {
     if (draggedTask && draggedTask.status !== newStatus) {
@@ -201,25 +446,117 @@ export default function MissionControlSync() {
     if (!lastSeen) return taskComments.length
     return taskComments.filter(c => new Date(c.timestamp) > new Date(lastSeen)).length
   }
+
+  const openMentionTask = (mention) => {
+    const task = doc?.tasks?.[mention.taskId]
+    if (!task) {
+      setNotificationsError(`Task ${mention.taskId} no longer exists.`)
+      return
+    }
+    setNotificationsError(null)
+    setSelectedTask(task)
+    setView('board')
+    setShowNotifications(false)
+  }
   
   return (
     <div style={styles.container}>
-      <header style={styles.header}>
+      <header style={styles.header} className="mc-header">
         <h1 style={styles.logo}>Mission Control</h1>
-        <div style={styles.headerMeta}>
+        <div style={styles.headerMeta} className="mc-header-meta">
           <span style={styles.stat}>{tasks.length} tasks</span>
+          <label style={styles.userPickerLabel}>
+            Actor
+            <select
+              style={styles.userPicker}
+              value={currentUser}
+              onChange={(e) => setCurrentUser(e.target.value)}
+              disabled={actorNames.length === 0}
+            >
+              {actorNames.length === 0 ? (
+                <option value="">No actors</option>
+              ) : (
+                actorNames.map(name => (
+                  <option key={name} value={name}>
+                    @{name}
+                  </option>
+                ))
+              )}
+            </select>
+          </label>
           <button style={{ ...styles.viewToggle, ...(view === 'activity' ? styles.viewToggleActive : {}) }}
             onClick={() => setView(view === 'board' ? 'activity' : 'board')}>
             {view === 'board' ? '📋 Activity' : '📊 Board'}
           </button>
+          <div style={styles.notificationsWrapper} ref={notificationsRef}>
+            <button
+              style={styles.notificationsBtn}
+              onClick={() => setShowNotifications(prev => !prev)}
+              disabled={!currentUser}
+              title={currentUser ? `Pending mentions for @${currentUser}` : 'Select a user'}
+            >
+              Mentions
+              {pendingMentions.length > 0 && (
+                <span style={styles.unreadBadge}>{pendingMentions.length}</span>
+              )}
+            </button>
+            {showNotifications && (
+              <div style={styles.notificationsPanel}>
+                <div style={styles.notificationsHeader}>
+                  <span style={styles.sectionTitle}>Pending for actor @{currentUser}</span>
+                </div>
+                {pendingMentions.length === 0 ? (
+                  <p style={styles.notificationsEmpty}>No pending mentions.</p>
+                ) : (
+                  <div style={styles.notificationsList}>
+                    {pendingMentions.map((mention) => (
+                      <button
+                        key={mention.id}
+                        style={styles.notificationsItem}
+                        onClick={() => openMentionTask(mention)}
+                      >
+                        <div style={styles.notificationsItemTop}>
+                          <span style={styles.commentAuthor}>@{mention.from_agent}</span>
+                          <span style={styles.commentTime}>Task {mention.taskId}</span>
+                          <span style={styles.commentTimeRight}>{formatRelativeTime(mention.timestamp)}</span>
+                        </div>
+                        <div style={styles.activityEntryDetails}>
+                          {(mention.content || '').slice(0, 120)}
+                          {mention.content && mention.content.length > 120 ? '...' : ''}
+                        </div>
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+          </div>
           <span style={{ ...styles.connectionDot, background: connected ? '#10b981' : '#ef4444' }} />
           <button className="mc-header-add" style={styles.addBtn} onClick={() => setShowNewTask(true)}>+ New</button>
         </div>
       </header>
 
       {error && (
-        <div style={styles.errorBanner}>
+        <div style={styles.errorBanner} role="alert">
           {error}
+        </div>
+      )}
+      {notificationsError && (
+        <div style={styles.errorBanner} role="alert">
+          {notificationsError}
+        </div>
+      )}
+      {traceFetchError && (
+        <div style={styles.errorBanner} role="alert">
+          <span style={{ flex: 1 }}>{traceFetchError}</span>
+          <button
+            type="button"
+            style={styles.traceErrorDismiss}
+            onClick={() => setTraceFetchError(null)}
+            aria-label="Dismiss trace error"
+          >
+            Dismiss
+          </button>
         </div>
       )}
       
@@ -261,7 +598,7 @@ export default function MissionControlSync() {
       {/* Mobile FAB */}
       <button className="mc-fab" onClick={() => setShowNewTask(true)}>+</button>
       </>) : (
-        <ActivityView doc={doc} onSelectTask={setSelectedTask} />
+        <ActivityView doc={doc} onSelectTask={setSelectedTask} fetchTraceDetails={fetchTraceDetails} />
       )}
       
       {showNewTask && <NewTaskModal onClose={() => setShowNewTask(false)} onCreate={createTask} />}
@@ -276,6 +613,18 @@ export default function MissionControlSync() {
           onClose={() => setSelectedTask(null)}
           onUpdate={updateTask}
           onComment={addComment}
+          fetchTraceDetails={fetchTraceDetails}
+        />
+      )}
+      
+      {selectedTrace && (
+        <TraceModal 
+          trace={selectedTrace.trace}
+          githubUrl={selectedTrace.githubUrl}
+          onClose={() => {
+            setSelectedTrace(null)
+            setTraceFetchError(null)
+          }}
         />
       )}
     </div>
@@ -383,7 +732,7 @@ function NewTaskModal({ onClose, onCreate }) {
   )
 }
 
-function TaskDetailModal({ task, comments, agents, onClose, onUpdate, onComment, taskHistory, taskActivity }) {
+function TaskDetailModal({ task, comments, agents, onClose, onUpdate, onComment, taskHistory, taskActivity, fetchTraceDetails }) {
   const [commentText, setCommentText] = useState('')
   const [showMentions, setShowMentions] = useState(false)
   const [mentionFilter, setMentionFilter] = useState('')
@@ -519,6 +868,7 @@ function TaskDetailModal({ task, comments, agents, onClose, onUpdate, onComment,
             taskHistory={taskHistory}
             comments={comments}
             taskActivity={taskActivity}
+            fetchTraceDetails={fetchTraceDetails}
             formatTime={formatRelativeTime}
             scrollToRecent={scrollToRecent}
             commentsContainerRef={commentsContainerRef}
@@ -537,7 +887,7 @@ function TaskDetailModal({ task, comments, agents, onClose, onUpdate, onComment,
   )
 }
 
-function TaskHistory({ taskHistory, comments, taskActivity, formatTime, scrollToRecent, commentsContainerRef, commentsEndRef, commentText, handleCommentChange, handleComment, inputRef, showMentions, filteredAgents, insertMention }) {
+function TaskHistory({ taskHistory, comments, taskActivity, fetchTraceDetails, formatTime, scrollToRecent, commentsContainerRef, commentsEndRef, commentText, handleCommentChange, handleComment, inputRef, showMentions, filteredAgents, insertMention }) {
   const history = useMemo(() => {
     const items = []
     const commitHashes = new Set()
@@ -601,7 +951,11 @@ function TaskHistory({ taskHistory, comments, taskActivity, formatTime, scrollTo
               <div key={entry.commit?.hash || `commit-${entry.timestamp}-${entry.agent}`} style={{ ...styles.commitEntry, borderLeft: `4px solid ${borderColors.commit}` }}>
                 <div style={styles.commitHeader}>
                   <span>{icon}</span>
-                  <code style={styles.commitHash}>{entry.commit.shortHash}</code>
+                  <CommitHashButton
+                    shortHash={entry.commit.shortHash}
+                    fullHash={entry.commit.hash}
+                    onOpenTrace={fetchTraceDetails}
+                  />
                   <span style={styles.commitAgent}>@{entry.agent}</span>
                   <span style={styles.commentTimeRight}>{formatTime(entry.timestamp)}</span>
                 </div>
@@ -658,9 +1012,9 @@ function TaskHistory({ taskHistory, comments, taskActivity, formatTime, scrollTo
   )
 }
 
-function ActivityView({ doc, onSelectTask }) {
+function ActivityView({ doc, onSelectTask, fetchTraceDetails }) {
   const [filters, setFilters] = useState({
-    commit: true, comment: true, status: true, task: true, branch: true, agent: true,
+    commit: true, comment: true, status: true, task: true, branch: true, agent: true
   })
 
   const toggleFilter = (key) => setFilters((f) => ({ ...f, [key]: !f[key] }))
@@ -749,6 +1103,7 @@ function ActivityView({ doc, onSelectTask }) {
               entry={entry}
               formatTime={formatRelativeTime}
               onSelectTask={onSelectTask}
+              fetchTraceDetails={fetchTraceDetails}
             />
           ))}
           {filtered.length === 0 && (
@@ -792,7 +1147,7 @@ const kindIcons = {
   other: '●',
 }
 
-function TimelineEntry({ entry, formatTime, onSelectTask }) {
+function TimelineEntry({ entry, formatTime, onSelectTask, fetchTraceDetails }) {
   const borderColor = borderColors[entry._kind] || '#333'
   const icon = kindIcons[entry._kind] || '●'
   
@@ -804,7 +1159,11 @@ function TimelineEntry({ entry, formatTime, onSelectTask }) {
       <div style={{ ...styles.timelineItem, borderLeftColor: borderColor }} onClick={handleClick}>
         <div style={styles.timelineItemTop}>
           <span>{icon}</span>
-          <code style={styles.commitHash}>{entry.commit.shortHash}</code>
+          <CommitHashButton
+            shortHash={entry.commit.shortHash}
+            fullHash={entry.commit.hash}
+            onOpenTrace={fetchTraceDetails}
+          />
           <span style={styles.commitAgent}>@{entry.agent}</span>
           <span style={styles.activityTime}>{formatTime(entry.timestamp)}</span>
         </div>
@@ -831,6 +1190,96 @@ function TimelineEntry({ entry, formatTime, onSelectTask }) {
   )
 }
 
+function TraceModal({ trace, githubUrl, onClose }) {
+  const formatFileStats = (stat) => {
+    if (!stat) return null
+    return stat.split('\n').filter(Boolean).map((line, i) => (
+      <div key={i} style={styles.traceFileLine}>{line}</div>
+    ))
+  }
+  
+  return (
+    <div style={styles.modalOverlay} onClick={onClose}>
+      <div style={styles.traceModal} onClick={e => e.stopPropagation()}>
+        <div style={styles.detailHeader}>
+          <div>
+            <h2 style={styles.modalTitle}>Agent Trace</h2>
+            <code style={styles.traceCommitHash}>{trace.commit.hash.substring(0, 12)}</code>
+          </div>
+          <button style={styles.closeBtn} onClick={onClose}>×</button>
+        </div>
+        
+        <div style={styles.traceContent}>
+          {/* Commit Info */}
+          <div style={styles.traceSection}>
+            <h3 style={styles.traceSectionTitle}>Commit</h3>
+            <div style={styles.traceCommitMessage}>{trace.commit.message}</div>
+            <div style={styles.traceMetaRow}>
+              <span style={styles.traceLabel}>Author:</span>
+              <span style={styles.traceValue}>{trace.commit.author}</span>
+            </div>
+            <div style={styles.traceMetaRow}>
+              <span style={styles.traceLabel}>Timestamp:</span>
+              <span style={styles.traceValue}>{new Date(trace.timestamp).toLocaleString()}</span>
+            </div>
+            {githubUrl && (
+              <div style={styles.traceMetaRow}>
+                <a href={githubUrl} target="_blank" rel="noopener noreferrer" style={styles.traceLink}>
+                  View on GitHub →
+                </a>
+              </div>
+            )}
+          </div>
+          
+          {/* Agent Info */}
+          <div style={styles.traceSection}>
+            <h3 style={styles.traceSectionTitle}>Agent</h3>
+            <div style={styles.traceMetaRow}>
+              <span style={styles.traceLabel}>Name:</span>
+              <span style={styles.traceValue}>@{trace.agent.name}</span>
+            </div>
+            {trace.agent.model && (
+              <div style={styles.traceMetaRow}>
+                <span style={styles.traceLabel}>Model:</span>
+                <span style={styles.traceValue}>{trace.agent.model}</span>
+              </div>
+            )}
+            {trace.agent.sessionKey && (
+              <div style={styles.traceMetaRow}>
+                <span style={styles.traceLabel}>Session:</span>
+                <code style={styles.traceCode}>{trace.agent.sessionKey}</code>
+              </div>
+            )}
+          </div>
+          
+          {/* Task Link */}
+          {trace.task && (
+            <div style={styles.traceSection}>
+              <h3 style={styles.traceSectionTitle}>Linked Task</h3>
+              <code style={styles.traceCode}>{trace.task}</code>
+            </div>
+          )}
+          
+          {/* Diff Stats */}
+          {trace.diff && (
+            <div style={styles.traceSection}>
+              <h3 style={styles.traceSectionTitle}>Changes</h3>
+              {trace.diff.shortstat && (
+                <div style={styles.traceDiffSummary}>{trace.diff.shortstat}</div>
+              )}
+              {trace.diff.stat && (
+                <div style={styles.traceFileStats}>
+                  {formatFileStats(trace.diff.stat)}
+                </div>
+              )}
+            </div>
+          )}
+        </div>
+      </div>
+    </div>
+  )
+}
+
 const styles = {
   container: { minHeight: '100vh', background: '#0a0a0a', color: '#e5e5e5', fontFamily: '-apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif', overflowX: 'hidden', overflowY: 'auto', WebkitOverflowScrolling: 'touch' },
   centered: { display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', height: '100vh', background: '#0a0a0a' },
@@ -839,11 +1288,22 @@ const styles = {
   
   header: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '16px 20px', borderBottom: '1px solid #1a1a1a', position: 'sticky', top: 0, background: '#0a0a0a', zIndex: 50 },
   logo: { fontSize: 18, fontWeight: 600, color: '#fff', margin: 0 },
-  headerMeta: { display: 'flex', alignItems: 'center', gap: 16 },
+  headerMeta: { display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap', justifyContent: 'flex-end' },
   stat: { fontSize: 13, color: '#666' },
+  userPickerLabel: { display: 'flex', alignItems: 'center', gap: 8, fontSize: 12, color: '#666' },
+  userPicker: { background: '#111', border: '1px solid #333', borderRadius: 6, color: '#e5e5e5', padding: '6px 8px', fontSize: 12, maxWidth: 150 },
+  notificationsWrapper: { position: 'relative' },
+  notificationsBtn: { display: 'flex', alignItems: 'center', gap: 8, background: '#1a1a1a', border: '1px solid #333', color: '#cfcfcf', borderRadius: 6, padding: '6px 10px', fontSize: 12, cursor: 'pointer' },
+  notificationsPanel: { position: 'absolute', top: 'calc(100% + 8px)', right: 0, width: 'min(360px, calc(100vw - 24px))', maxHeight: 380, overflow: 'auto', background: '#111', border: '1px solid #333', borderRadius: 10, padding: 10, boxShadow: '0 10px 30px rgba(0,0,0,0.45)', zIndex: 80 },
+  notificationsHeader: { padding: '4px 4px 8px', borderBottom: '1px solid #222', marginBottom: 8 },
+  notificationsList: { display: 'flex', flexDirection: 'column', gap: 8 },
+  notificationsItem: { textAlign: 'left', background: '#0a0a0a', border: '1px solid #222', borderRadius: 8, padding: 10, cursor: 'pointer', color: '#e5e5e5' },
+  notificationsItemTop: { display: 'flex', alignItems: 'center', gap: 8, marginBottom: 6 },
+  notificationsEmpty: { margin: 0, fontSize: 13, color: '#666', padding: '8px 4px' },
   connectionDot: { width: 8, height: 8, borderRadius: '50%' },
   addBtn: { background: '#fff', color: '#0a0a0a', border: 'none', borderRadius: 6, padding: '8px 14px', fontSize: 13, fontWeight: 500, cursor: 'pointer' },
-  errorBanner: { margin: '12px 20px 0', padding: '10px 12px', borderRadius: 8, border: '1px solid #ef4444', color: '#fecaca', background: 'rgba(127, 29, 29, 0.35)', fontSize: 13 },
+  errorBanner: { margin: '12px 20px 0', padding: '10px 12px', borderRadius: 8, border: '1px solid #ef4444', color: '#fecaca', background: 'rgba(127, 29, 29, 0.35)', fontSize: 13, display: 'flex', alignItems: 'center', gap: 12, flexWrap: 'wrap' },
+  traceErrorDismiss: { background: 'transparent', border: '1px solid #fecaca', color: '#fecaca', borderRadius: 6, padding: '4px 10px', fontSize: 12, cursor: 'pointer', flexShrink: 0 },
   
   columnHeader: { display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '12px 20px', borderBottom: '1px solid #1a1a1a' },
   columnTitle: { fontSize: 13, fontWeight: 500, color: '#888', textTransform: 'uppercase', letterSpacing: '0.05em' },
@@ -939,6 +1399,18 @@ const styles = {
   commitEntry: { background: '#0d1117', border: '1px solid #1a2332', borderRadius: 8, padding: '12px 16px' },
   commitHeader: { display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 },
   commitHash: { fontSize: 13, fontWeight: 600, color: '#58a6ff', background: '#0d1117', padding: '2px 6px', borderRadius: 4, fontFamily: 'monospace' },
+  commitHashBtn: {
+    fontSize: 13,
+    fontWeight: 600,
+    color: '#58a6ff',
+    background: '#0d1117',
+    padding: '2px 6px',
+    borderRadius: 4,
+    fontFamily: 'monospace',
+    border: 'none',
+    cursor: 'pointer',
+    lineHeight: 'inherit',
+  },
   commitAgent: { fontSize: 13, color: '#10b981', fontWeight: 500 },
   commitMessage: { fontSize: 14, color: '#ccc', lineHeight: 1.4 },
   commitDiff: { fontSize: 12, color: '#666', marginTop: 4, fontFamily: 'monospace' },
@@ -959,6 +1431,22 @@ const styles = {
   mentionDropdown: { position: 'absolute', bottom: '100%', left: 0, right: 0, background: '#111', border: '1px solid #333', borderRadius: 8, marginBottom: 4, maxHeight: 200, overflow: 'auto' },
   mentionItem: { padding: '10px 14px', cursor: 'pointer', fontSize: 14, color: '#e5e5e5' },
   mentionRole: { color: '#666', marginLeft: 8, fontSize: 12 },
+  
+  // Trace Modal
+  traceModal: { background: '#111', borderRadius: 12, width: '100%', maxWidth: 600, maxHeight: '90vh', overflow: 'hidden', display: 'flex', flexDirection: 'column', border: '1px solid #222', margin: 20 },
+  traceContent: { flex: 1, overflow: 'auto', padding: 24 },
+  traceSection: { marginBottom: 24 },
+  traceSectionTitle: { fontSize: 14, fontWeight: 600, color: '#888', textTransform: 'uppercase', letterSpacing: '0.05em', margin: '0 0 12px' },
+  traceCommitHash: { fontSize: 13, color: '#10b981', fontFamily: 'monospace', background: '#0a0a0a', padding: '4px 8px', borderRadius: 4 },
+  traceCommitMessage: { fontSize: 16, color: '#fff', marginBottom: 12, lineHeight: 1.4 },
+  traceMetaRow: { display: 'flex', gap: 12, marginBottom: 8, alignItems: 'center' },
+  traceLabel: { fontSize: 13, color: '#666', minWidth: 80 },
+  traceValue: { fontSize: 13, color: '#e5e5e5' },
+  traceCode: { fontSize: 12, color: '#10b981', fontFamily: 'monospace', background: '#0a0a0a', padding: '4px 8px', borderRadius: 4 },
+  traceLink: { fontSize: 13, color: '#10b981', textDecoration: 'none' },
+  traceDiffSummary: { fontSize: 13, color: '#888', marginBottom: 12, fontFamily: 'monospace' },
+  traceFileStats: { background: '#0a0a0a', border: '1px solid #1a1a1a', borderRadius: 8, padding: 12, fontFamily: 'monospace', fontSize: 12 },
+  traceFileLine: { color: '#888', marginBottom: 4, whiteSpace: 'pre' },
 }
 
 const DETAIL_MARKDOWN_COMPONENTS = {
@@ -1009,6 +1497,9 @@ if (!document.getElementById('mc-styles')) {
     
     /* Mobile styles */
     @media (max-width: 767px) {
+      .mc-header { align-items: flex-start; }
+      .mc-header-meta { max-width: 100%; gap: 8px; }
+      .mc-header-meta > * { flex-shrink: 0; }
       .mc-column-collapsed { max-height: 48px; overflow: hidden; }
       /* Mobile tabs for columns */
       .mc-mobile-tabs { display: flex; overflow-x: auto; border-bottom: 1px solid #1a1a1a; -webkit-overflow-scrolling: touch; }

@@ -240,10 +240,10 @@ describe('createTrace', () => {
   
   it('uses environment variables as fallback', () => {
     const originalAgent = process.env.MC_AGENT;
-    const originalModel = process.env.OPENCLAW_MODEL;
+    const originalModel = process.env.MC_AGENT_MODEL;
     
     process.env.MC_AGENT = 'env-agent';
-    process.env.OPENCLAW_MODEL = 'env-model';
+    process.env.MC_AGENT_MODEL = 'env-model';
     
     try {
       const { trace } = agentTrace.createTrace({
@@ -260,8 +260,33 @@ describe('createTrace', () => {
       // Restore
       if (originalAgent) process.env.MC_AGENT = originalAgent;
       else delete process.env.MC_AGENT;
+      if (originalModel) process.env.MC_AGENT_MODEL = originalModel;
+      else delete process.env.MC_AGENT_MODEL;
+    }
+  });
+
+  it('supports legacy OpenClaw environment aliases for compatibility', () => {
+    const originalModel = process.env.OPENCLAW_MODEL;
+    const originalSessionKey = process.env.OPENCLAW_SESSION_KEY;
+
+    process.env.OPENCLAW_MODEL = 'legacy-model';
+    process.env.OPENCLAW_SESSION_KEY = 'legacy-session';
+
+    try {
+      const { trace } = agentTrace.createTrace({
+        repoPath: testRepoPath,
+        commitHash: 'abc456',
+        commitMessage: 'Legacy env test',
+        commitAuthor: 'Test <test@test.com>',
+      });
+
+      assert.strictEqual(trace.agent.model, 'legacy-model');
+      assert.strictEqual(trace.agent.sessionKey, 'legacy-session');
+    } finally {
       if (originalModel) process.env.OPENCLAW_MODEL = originalModel;
       else delete process.env.OPENCLAW_MODEL;
+      if (originalSessionKey) process.env.OPENCLAW_SESSION_KEY = originalSessionKey;
+      else delete process.env.OPENCLAW_SESSION_KEY;
     }
   });
 });
@@ -371,8 +396,69 @@ describe('getTraceByCommit', () => {
     });
     
     const trace = agentTrace.getTraceByCommit(testRepoPath, 'abc123de');
-    
+
     assert.ok(trace, 'Should find trace by short hash');
+  });
+
+  it('finds the exact full-hash trace when short hashes collide', () => {
+    const traceDir = agentTrace.ensureTraceDir(testRepoPath);
+    const requestedHash = 'abc123def456789012345678901234567890abcd';
+    const otherHash = 'abc123de00000000000000000000000000000000';
+
+    writeFileSync(join(traceDir, '2026-01-02-abc123de.json'), JSON.stringify({
+      version: 1,
+      timestamp: '2026-01-02T10:00:00.000Z',
+      commit: {
+        hash: otherHash,
+        message: 'Other commit',
+        author: 'Test <test@test.com>'
+      },
+      agent: {
+        name: 'other'
+      }
+    }, null, 2));
+
+    writeFileSync(join(traceDir, '2026-01-03-abc123de.json'), JSON.stringify({
+      version: 1,
+      timestamp: '2026-01-03T10:00:00.000Z',
+      commit: {
+        hash: requestedHash,
+        message: 'Requested commit',
+        author: 'Test <test@test.com>'
+      },
+      agent: {
+        name: 'gary'
+      }
+    }, null, 2));
+
+    const trace = agentTrace.getTraceByCommit(testRepoPath, requestedHash, { exact: true });
+
+    assert.ok(trace, 'Should find the exact trace');
+    assert.strictEqual(trace.commit.hash, requestedHash);
+    assert.strictEqual(trace.agent.name, 'gary');
+  });
+
+  it('returns null for exact lookup when only a short-hash match exists', () => {
+    const traceDir = agentTrace.ensureTraceDir(testRepoPath);
+    const requestedHash = 'abc123def456789012345678901234567890abcd';
+    const otherHash = 'abc123de00000000000000000000000000000000';
+
+    writeFileSync(join(traceDir, '2026-01-02-abc123de.json'), JSON.stringify({
+      version: 1,
+      timestamp: '2026-01-02T10:00:00.000Z',
+      commit: {
+        hash: otherHash,
+        message: 'Other commit',
+        author: 'Test <test@test.com>'
+      },
+      agent: {
+        name: 'other'
+      }
+    }, null, 2));
+
+    const trace = agentTrace.getTraceByCommit(testRepoPath, requestedHash, { exact: true });
+
+    assert.strictEqual(trace, null);
   });
   
   it('returns null for unknown commit', () => {

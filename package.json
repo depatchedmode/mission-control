@@ -10,7 +10,6 @@
     "sync": "node automerge-sync-server.js",
     "test": "node --test --test-skip-pattern=\"GAP:\"",
     "test:gaps": "node --test test/fitness-gaps.test.js",
-    "daemon": "node daemon/index.js",
     "ui:build": "npm run build --prefix ui-prototype"
   },
   "keywords": [

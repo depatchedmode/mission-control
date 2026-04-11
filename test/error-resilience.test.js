@@ -18,6 +18,38 @@ import {
   httpUrl,
 } from '../support/resources.js'
 
+const UNAUTHORIZED_ENDPOINTS = [
+  ['GET', '/automerge/doc'],
+  ['GET', '/automerge/url'],
+  ['GET', '/automerge/mentions/pending'],
+  ['POST', '/automerge/comment'],
+  ['POST', '/automerge/task'],
+  ['POST', '/automerge/agent'],
+  ['POST', '/automerge/last-seen'],
+  ['POST', '/automerge/ws-ticket'],
+  ['POST', '/automerge/mentions/fake/deliver'],
+  ['POST', '/automerge/mentions/fake/claim'],
+  ['POST', '/automerge/mentions/claim-next'],
+  ['POST', '/automerge/mentions/fake/release'],
+  ['PATCH', '/automerge/task/fake'],
+  ['PATCH', '/automerge/comment/fake'],
+  ['DELETE', '/automerge/comment/fake'],
+  ['GET', '/automerge/task/fake/history'],
+  ['GET', '/automerge/task/fake/branches'],
+  ['POST', '/automerge/task/fake/branch'],
+  ['POST', '/automerge/task/fake/commit'],
+  ['POST', '/automerge/branch/fake/merge'],
+]
+
+async function fetchWithoutAuth(server, method, path) {
+  const url = httpUrl(server, path)
+  return fetch(url, {
+    method,
+    headers: { 'Content-Type': 'application/json' },
+    body: method === 'GET' || method === 'DELETE' ? undefined : '{}',
+  })
+}
+
 describe('error resilience', () => {
   // ─── Missing Resources ───
 
@@ -140,34 +172,9 @@ describe('error resilience', () => {
   it('all endpoints reject unauthorized requests', async () => {
     await withStartedServer({}, async server => {
       // Keep in sync with routes in automerge-sync-server.js setupHTTPAPI().
-      // Currently 17 endpoints — if you add a route, add it here too.
-      const endpoints = [
-        ['GET', '/automerge/doc'],
-        ['GET', '/automerge/url'],
-        ['GET', '/automerge/mentions/pending'],
-        ['POST', '/automerge/comment'],
-        ['POST', '/automerge/task'],
-        ['POST', '/automerge/agent'],
-        ['POST', '/automerge/last-seen'],
-        ['POST', '/automerge/ws-ticket'],
-        ['POST', '/automerge/mentions/fake/deliver'],
-        ['PATCH', '/automerge/task/fake'],
-        ['PATCH', '/automerge/comment/fake'],
-        ['DELETE', '/automerge/comment/fake'],
-        ['GET', '/automerge/task/fake/history'],
-        ['GET', '/automerge/task/fake/branches'],
-        ['POST', '/automerge/task/fake/branch'],
-        ['POST', '/automerge/task/fake/commit'],
-        ['POST', '/automerge/branch/fake/merge'],
-      ]
-
-      for (const [method, path] of endpoints) {
-        const url = httpUrl(server, path)
-        const res = await fetch(url, {
-          method,
-          headers: { 'Content-Type': 'application/json' },
-          body: method !== 'GET' ? '{}' : undefined,
-        })
+      // Currently 20 endpoints — if you add a route, add it here too.
+      for (const [method, path] of UNAUTHORIZED_ENDPOINTS) {
+        const res = await fetchWithoutAuth(server, method, path)
 
         assert.equal(
           res.status,
@@ -182,9 +189,73 @@ describe('error resilience', () => {
 
   it('delivering a nonexistent mention does not crash', async () => {
     await withStartedServer({}, async server => {
-      const result = await authedPost(server, '/automerge/mentions/fake-id/deliver', {})
+      const result = await authedPost(server, '/automerge/mentions/fake-id/deliver', {
+        claimToken: 'fake-claim-token',
+      })
       // Should succeed silently (mark operation on missing key is a no-op)
       assert.ok(result.success)
+      assert.equal(result.delivered, false)
+    })
+  })
+
+  it('claiming and releasing a nonexistent mention does not crash', async () => {
+    await withStartedServer({}, async server => {
+      const claim = await authedPost(server, '/automerge/mentions/fake-id/claim', {})
+      assert.ok(claim.success)
+      assert.equal(claim.claimed, false)
+
+      const release = await authedPost(server, '/automerge/mentions/fake-id/release', {
+        claimToken: 'fake-claim-token',
+      })
+      assert.ok(release.success)
+      assert.equal(release.released, false)
+    })
+  })
+
+  it('deliver and release reject missing claim tokens', async () => {
+    await withStartedServer({}, async server => {
+      const deliver = await authedPost(server, '/automerge/mentions/fake-id/deliver', {})
+      assert.equal(deliver.status, 400)
+      assert.match(deliver.error, /claimToken/i)
+
+      const release = await authedPost(server, '/automerge/mentions/fake-id/release', {})
+      assert.equal(release.status, 400)
+      assert.match(release.error, /claimToken/i)
+    })
+  })
+
+  it('claim-next rejects missing or blank agent names', async () => {
+    await withStartedServer({}, async server => {
+      const missing = await authedPost(server, '/automerge/mentions/claim-next', {})
+      assert.equal(missing.status, 400)
+      assert.match(missing.error, /agent is required/i)
+
+      const blank = await authedPost(server, '/automerge/mentions/claim-next', {
+        agent: '   ',
+      })
+      assert.equal(blank.status, 400)
+      assert.match(blank.error, /agent is required/i)
+    })
+  })
+
+  it('agent registration accepts a simple name and role', async () => {
+    await withStartedServer({}, async server => {
+      const result = await authedPost(server, '/automerge/agent', {
+        name: 'reviewer-bob',
+        role: 'Reviewer',
+      })
+      assert.equal(result.status, 200)
+      assert.ok(result.success)
+    })
+  })
+
+  it('agent registration rejects blank names', async () => {
+    await withStartedServer({}, async server => {
+      const result = await authedPost(server, '/automerge/agent', {
+        name: '   ',
+      })
+      assert.equal(result.status, 400)
+      assert.match(result.error, /name is required/i)
     })
   })
 

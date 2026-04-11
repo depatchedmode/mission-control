@@ -26,8 +26,8 @@ Each trace records:
 | Field | Source | Description |
 |-------|--------|-------------|
 | `agent.name` | `--agent` or `MC_AGENT` env | Who made the commit |
-| `agent.model` | `--model` or `OPENCLAW_MODEL` env | AI model used |
-| `agent.sessionKey` | `--session` or `OPENCLAW_SESSION_KEY` env | Session for context lookup |
+| `agent.model` | `--model` or `MC_AGENT_MODEL` env | AI model used |
+| `agent.sessionKey` | `--session` or `MC_AGENT_SESSION_KEY` env | Session for context lookup |
 | `task` | `--task` flag | Linked Mission Control task |
 | `commit.hash` | Git | Full commit SHA |
 | `commit.message` | Git | Commit message |
@@ -161,8 +161,8 @@ Set these to avoid passing flags every time:
 
 ```bash
 export MC_AGENT=gary
-export OPENCLAW_MODEL=claude-opus
-export OPENCLAW_SESSION_KEY=agent:gary:main
+export MC_AGENT_MODEL=claude-opus
+export MC_AGENT_SESSION_KEY=agent:gary:main
 ```
 
 Then just:
@@ -170,14 +170,16 @@ Then just:
 mc commit -m "message"  # Uses env vars automatically
 ```
 
-## Integration with OpenClaw
-
-When running under OpenClaw, the session key allows looking up the full conversation context later:
+Legacy aliases remain supported for compatibility:
 
 ```bash
-# Find the session transcript
-cat ~/.openclaw/agents/gary/sessions/<sessionKey>.jsonl
+export OPENCLAW_MODEL=claude-opus
+export OPENCLAW_SESSION_KEY=agent:gary:main
 ```
+
+## Integration with External Harnesses
+
+When running under an external agent harness, the session key can be used to look up the full conversation context later. The exact lookup path depends on the harness you are using.
 
 This creates an audit trail from commit → agent → conversation → decisions.
 

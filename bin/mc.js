@@ -7,6 +7,7 @@
  * - automerge-sync-server.js is the HTTP/WebSocket hub
  * - CLI commands talk to the sync server over HTTP
  * - UI connects through the sync server's HTTP/WebSocket APIs
+ * - External agent harnesses are expected to orchestrate mentions via this CLI
  *
  * Usage:
  *   mc comment <task-id> "message"
@@ -37,19 +38,21 @@ import { activityTaskId } from '../lib/activity-task-id.js';
 
 const API_BASE = process.env.MC_SYNC_SERVER || `http://localhost:${process.env.MC_HTTP_PORT || '8004'}`;
 const API_TOKEN = process.env.MC_API_TOKEN || null;
-const rawArgs = process.argv.slice(2);
-const args = rawArgs;
+const args = process.argv.slice(2);
 const command = args[0];
 const subcommand = args[1];
+const BOOLEAN_FLAGS = new Set(['--json']);
 
 // Extract positional args (skip --flag value pairs)
 function positionalArgs() {
   const result = [];
-  for (let i = 0; i < rawArgs.length; i++) {
-    if (rawArgs[i].startsWith('--')) {
-      i++; // skip flag value
+  for (let i = 0; i < args.length; i++) {
+    if (args[i].startsWith('--')) {
+      if (!BOOLEAN_FLAGS.has(args[i])) {
+        i++; // skip flag value
+      }
     } else {
-      result.push(rawArgs[i]);
+      result.push(args[i]);
     }
   }
   return result;
@@ -128,6 +131,33 @@ async function getPendingMentions(agent) {
   return data.mentions || [];
 }
 
+async function claimMention(mentionId) {
+  return apiPost(`/automerge/mentions/${encodeURIComponent(mentionId)}/claim`, {});
+}
+
+async function releaseMention(mentionId, claimToken, error = null) {
+  return apiPost(`/automerge/mentions/${encodeURIComponent(mentionId)}/release`, {
+    claimToken,
+    ...(error ? { error } : {}),
+  });
+}
+
+async function acknowledgeMention(mentionId, claimToken) {
+  return apiPost(`/automerge/mentions/${encodeURIComponent(mentionId)}/deliver`, {
+    claimToken,
+  });
+}
+
+async function claimNextMention(agent) {
+  const data = await apiPost('/automerge/mentions/claim-next', { agent });
+  return {
+    mention: data.mention || null,
+    claimed: Boolean(data.claimed),
+    claimToken: data.claimToken || null,
+    claimExpiresAt: data.claimExpiresAt || null,
+  };
+}
+
 async function getTaskHistory(taskId) {
   const data = await apiGet(`/automerge/task/${taskId}/history`);
   return data.history || [];
@@ -149,7 +179,16 @@ Usage:
   mc comments <task-id>                    List comments for a task (shows IDs)
   mc comment-delete <comment-id>           Delete a comment by ID
   mc mentions <agent>                      List pending @mentions for agent
-  mc mentions pending [--agent <name>]     (legacy) List pending @mentions
+  mc mentions pending [--agent <name>] [--json]
+                                           List pending @mentions
+  mc mentions claim <mention-id> [--json]
+                                           Claim one pending mention lease
+  mc mentions claim-next --agent <name> [--json]
+                                           Claim the next available mention
+  mc mentions ack <mention-id> --claim-token <token> [--json]
+                                           Mark a claimed mention delivered
+  mc mentions release <mention-id> --claim-token <token> [--error <msg>] [--json]
+                                           Release a claim back to the pool
   mc activity [--limit <n>]                Show activity feed
   mc agents list                           List registered agents
   mc show <task-id>                        Show task details
@@ -185,13 +224,17 @@ Agent Trace (commit attribution):
 
 Environment:
   MC_AGENT              Agent name (default: 'unknown')
-  OPENCLAW_MODEL        Model name for traces
-  OPENCLAW_SESSION_KEY  Session key for conversation context lookup
+  MC_AGENT_MODEL        Model name for traces
+  MC_AGENT_SESSION_KEY  Session key for external harness context lookup
+  OPENCLAW_MODEL        Legacy alias for MC_AGENT_MODEL
+  OPENCLAW_SESSION_KEY  Legacy alias for MC_AGENT_SESSION_KEY
 
 Examples:
   MC_AGENT=gary mc comment clawd-pxdf "Starting work on this"
   mc comment clawd-pxdf "@friday can you help with the API?"
   mc mentions gary
+  mc mentions claim-next --agent friday --json
+  mc mentions ack mention-123 --claim-token token-abc --json
   mc tasks --status in-progress --assignee gary
   mc task create "Fix login bug" --priority p1 --assignee friday
   mc timeline --agent friday --limit 10
@@ -220,6 +263,18 @@ function getArg(name, defaultValue = null) {
   return args[idx + 1] || defaultValue;
 }
 
+function hasFlag(name) {
+  return args.includes(`--${name}`);
+}
+
+function getDefaultAgent() {
+  return getArg('agent', process.env.MC_AGENT || 'unknown');
+}
+
+function printJson(value) {
+  console.log(JSON.stringify(value, null, 2));
+}
+
 async function main() {
   if (!command || command === 'help' || command === '--help') {
     usage();
@@ -233,7 +288,7 @@ async function main() {
       const posArgs = positionalArgs();
       const taskId = posArgs[1];
       const message = posArgs[2];
-      const agent = getArg('agent', process.env.MC_AGENT || 'unknown');
+      const agent = getDefaultAgent();
       
       if (!taskId || !message) {
         console.error('Usage: mc comment <task-id> "message" [--agent <name>]');
@@ -246,7 +301,7 @@ async function main() {
       const mentions = message.match(/@(\w+)/g) || [];
       if (mentions.length > 0) {
         console.log(`📬 Mentions created: ${mentions.join(', ')}`);
-        console.log('   (Daemon will deliver them shortly)');
+        console.log('   (External agent harnesses should claim them via `mc mentions ...`)');
       }
     }
 
@@ -301,27 +356,127 @@ async function main() {
     // mc mentions pending [--agent <name>]
     // ─────────────────────────────────────────
     else if (command === 'mentions') {
-      let agent;
-      if (subcommand === 'pending') {
-        agent = getArg('agent');
-      } else if (subcommand && !subcommand.startsWith('--')) {
-        // New syntax: mc mentions <agent>
-        agent = subcommand;
-      } else {
-        agent = getArg('agent');
+      const jsonOutput = hasFlag('json');
+
+      if (subcommand === 'claim') {
+        const mentionId = args[2];
+        if (!mentionId) {
+          console.error('Usage: mc mentions claim <mention-id> [--json]');
+          process.exit(1);
+        }
+
+        const claim = await claimMention(mentionId);
+        if (jsonOutput) {
+          printJson({ mentionId, ...claim });
+          return;
+        }
+
+        if (claim.claimed) {
+          console.log(`✅ Claimed mention ${mentionId}`);
+          console.log(`   Claim token: ${claim.claimToken}`);
+          console.log(`   Lease expires: ${claim.claimExpiresAt}`);
+        } else {
+          console.log(`Mention ${mentionId} is not claimable.`);
+        }
       }
-      
-      const mentions = await getPendingMentions(agent);
-      
-      if (mentions.length === 0) {
-        console.log('No pending mentions.');
-      } else {
-        console.log(`${mentions.length} pending mention(s):\n`);
-        for (const m of mentions) {
-          console.log(`[${m.id}] @${m.to_agent} from @${m.from_agent}`);
-          console.log(`   Task: ${m.taskId}`);
-          console.log(`   "${m.content.substring(0, 80)}${m.content.length > 80 ? '...' : ''}"`);
-          console.log(`   ${formatTime(m.timestamp)}\n`);
+
+      else if (subcommand === 'claim-next') {
+        const agent = getArg('agent') || (args[2] && !args[2].startsWith('--') ? args[2] : null);
+        if (!agent) {
+          console.error('Usage: mc mentions claim-next --agent <name> [--json]');
+          process.exit(1);
+        }
+
+        const claim = await claimNextMention(agent);
+        if (jsonOutput) {
+          printJson(claim);
+          return;
+        }
+
+        if (!claim.claimed) {
+          console.log(`No claimable mentions for @${agent}.`);
+          return;
+        }
+
+        console.log(`✅ Claimed mention ${claim.mention.id} for @${agent}`);
+        console.log(`   From: @${claim.mention.from_agent}`);
+        console.log(`   Task: ${claim.mention.taskId}`);
+        console.log(`   Claim token: ${claim.claimToken}`);
+        console.log(`   Lease expires: ${claim.claimExpiresAt}`);
+      }
+
+      else if (subcommand === 'ack' || subcommand === 'deliver') {
+        const mentionId = args[2];
+        const claimToken = getArg('claim-token');
+        if (!mentionId || !claimToken) {
+          console.error('Usage: mc mentions ack <mention-id> --claim-token <token> [--json]');
+          process.exit(1);
+        }
+
+        const result = await acknowledgeMention(mentionId, claimToken);
+        if (jsonOutput) {
+          printJson({ mentionId, ...result });
+          return;
+        }
+
+        if (result.delivered) {
+          console.log(`✅ Marked mention ${mentionId} delivered`);
+        } else {
+          console.log(`Mention ${mentionId} was not marked delivered.`);
+        }
+      }
+
+      else if (subcommand === 'release') {
+        const mentionId = args[2];
+        const claimToken = getArg('claim-token');
+        const releaseError = getArg('error');
+        if (!mentionId || !claimToken) {
+          console.error(
+            'Usage: mc mentions release <mention-id> --claim-token <token> [--error <msg>] [--json]'
+          );
+          process.exit(1);
+        }
+
+        const result = await releaseMention(mentionId, claimToken, releaseError);
+        if (jsonOutput) {
+          printJson({ mentionId, ...result });
+          return;
+        }
+
+        if (result.released) {
+          console.log(`✅ Released claim for mention ${mentionId}`);
+        } else {
+          console.log(`Mention ${mentionId} was not released.`);
+        }
+      }
+
+      else {
+        let agent;
+        if (subcommand === 'pending') {
+          agent = getArg('agent');
+        } else if (subcommand && !subcommand.startsWith('--')) {
+          // New syntax: mc mentions <agent>
+          agent = subcommand;
+        } else {
+          agent = getArg('agent');
+        }
+
+        const mentions = await getPendingMentions(agent);
+        if (jsonOutput) {
+          printJson(mentions);
+          return;
+        }
+
+        if (mentions.length === 0) {
+          console.log('No pending mentions.');
+        } else {
+          console.log(`${mentions.length} pending mention(s):\n`);
+          for (const m of mentions) {
+            console.log(`[${m.id}] @${m.to_agent} from @${m.from_agent}`);
+            console.log(`   Task: ${m.taskId}`);
+            console.log(`   "${m.content.substring(0, 80)}${m.content.length > 80 ? '...' : ''}"`);
+            console.log(`   ${formatTime(m.timestamp)}\n`);
+          }
         }
       }
     }
@@ -364,7 +519,6 @@ async function main() {
           console.log('Registered agents:\n');
           for (const a of agents) {
             console.log(`  🤖 ${a.name} (${a.role || 'Agent'})`);
-            console.log(`     Session: ${a.session_key}`);
             console.log(`     Status: ${a.status || 'idle'}`);
             console.log();
           }
@@ -614,7 +768,7 @@ async function main() {
     // ─────────────────────────────────────────
     else if (command === 'update') {
       const taskId = args[1];
-      const agent = getArg('agent', process.env.MC_AGENT || 'unknown');
+      const agent = getDefaultAgent();
       
       if (!taskId) {
         console.error('Usage: mc update <task-id> [--status <s>] [--assignee <name>] [--title "text"] [--description "text"] [--priority <p>]');
@@ -657,7 +811,7 @@ async function main() {
     else if (command === 'branch') {
       const taskId = args[1];
       const branchName = args[2];
-      const agent = getArg('agent', process.env.MC_AGENT || 'unknown');
+      const agent = getDefaultAgent();
       
       if (!taskId || !branchName) {
         console.error('Usage: mc branch <task-id> <branch-name>');
@@ -718,7 +872,7 @@ async function main() {
     // ─────────────────────────────────────────
     else if (command === 'merge') {
       const branchId = args[1];
-      const agent = getArg('agent', process.env.MC_AGENT || 'unknown');
+      const agent = getDefaultAgent();
       
       if (!branchId) {
         console.error('Usage: mc merge <branch-task-id>');
@@ -745,7 +899,7 @@ async function main() {
       const assignee = getArg('assignee');
       const tagsArg = getArg('tag');
       const tags = tagsArg ? [tagsArg] : [];
-      const agent = getArg('agent', process.env.MC_AGENT || 'unknown');
+      const agent = getDefaultAgent();
       
       if (!title) {
         console.error('Usage: mc task create "title" [--priority p0-p3] [--assignee name] [--tag tag]');
@@ -779,9 +933,15 @@ async function main() {
       
       // Extract our custom args, pass the rest to git
       const taskId = getArg('task');
-      const agent = getArg('agent', process.env.MC_AGENT || 'unknown');
-      const model = getArg('model', process.env.OPENCLAW_MODEL || null);
-      const sessionKey = getArg('session', process.env.OPENCLAW_SESSION_KEY || null);
+      const agent = getDefaultAgent();
+      const model = getArg(
+        'model',
+        process.env.MC_AGENT_MODEL || process.env.OPENCLAW_MODEL || null
+      );
+      const sessionKey = getArg(
+        'session',
+        process.env.MC_AGENT_SESSION_KEY || process.env.OPENCLAW_SESSION_KEY || null
+      );
 
       if (taskId) {
         try {
@@ -794,8 +954,8 @@ async function main() {
       
       // Build git args (remove our custom flags)
       const gitArgs = [];
-      for (let i = 1; i < rawArgs.length; i++) {
-        const arg = rawArgs[i];
+      for (let i = 1; i < args.length; i++) {
+        const arg = args[i];
         if (arg === '--task' || arg === '--agent' || arg === '--model' || arg === '--session') {
           i++; // skip the value too
         } else {
