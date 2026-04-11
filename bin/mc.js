@@ -474,6 +474,9 @@ async function main() {
           for (const m of mentions) {
             console.log(`[${m.id}] @${m.to_agent} from @${m.from_agent}`);
             console.log(`   Task: ${m.taskId}`);
+            if (m.idempotency_key) {
+              console.log(`   Dedupe: ${m.idempotency_key}`);
+            }
             console.log(`   "${m.content.substring(0, 80)}${m.content.length > 80 ? '...' : ''}"`);
             console.log(`   ${formatTime(m.timestamp)}\n`);
           }
