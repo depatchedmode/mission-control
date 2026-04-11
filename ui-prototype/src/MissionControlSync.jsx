@@ -51,6 +51,24 @@ function parseIsoTimestampMs(value) {
   return Number.isFinite(parsed) ? parsed : null
 }
 
+function CommitHashButton({ shortHash, fullHash, onOpenTrace }) {
+  const label = shortHash || (fullHash ? fullHash.slice(0, 7) : 'commit')
+  return (
+    <button
+      type="button"
+      style={styles.commitHashBtn}
+      onClick={(e) => {
+        e.stopPropagation()
+        onOpenTrace(fullHash)
+      }}
+      title="View agent trace for this commit"
+      aria-label={`View agent trace for commit ${label}`}
+    >
+      {shortHash}
+    </button>
+  )
+}
+
 function isMentionPendingForAgent(mention, agent, nowMs = Date.now()) {
   if (!mention || typeof mention !== 'object') return false
   if (mention.delivered) return false
@@ -100,6 +118,9 @@ export default function MissionControlSync() {
   const [reconciledActor, setReconciledActor] = useState(null)
   const [notificationsError, setNotificationsError] = useState(null)
   const [traceFetchError, setTraceFetchError] = useState(null)
+  const traceFetchAbortRef = useRef(null)
+  const traceFetchRequestIdRef = useRef(0)
+
   const wsRef = useRef(null)
   const notificationsRef = useRef(null)
   const currentUserRef = useRef(currentUser)
@@ -355,12 +376,18 @@ export default function MissionControlSync() {
     })
   }
   
-  const fetchTraceDetails = async (commitHash) => {
+  const fetchTraceDetails = useCallback(async (commitHash) => {
+    traceFetchAbortRef.current?.abort()
+    const controller = new AbortController()
+    traceFetchAbortRef.current = controller
+    const requestId = ++traceFetchRequestIdRef.current
     setTraceFetchError(null)
     try {
       const data = await requestJson('', `/mc-api/automerge/trace/${encodeURIComponent(commitHash)}`, {
         token: API_TOKEN,
+        signal: controller.signal,
       })
+      if (requestId !== traceFetchRequestIdRef.current) return
       if (data.success) {
         setSelectedTrace(data)
         return
@@ -369,14 +396,21 @@ export default function MissionControlSync() {
         typeof data.error === 'string' ? data.error : 'Could not load trace for this commit.'
       )
     } catch (error) {
+      if (error?.name === 'AbortError') return
+      if (requestId !== traceFetchRequestIdRef.current) return
       const message =
         error instanceof SyncRequestError
           ? error.message
           : 'Could not load trace for this commit.'
       setTraceFetchError(message)
-      console.error('Failed to fetch trace:', error)
     }
-  }
+  }, [])
+
+  useEffect(() => {
+    return () => {
+      traceFetchAbortRef.current?.abort()
+    }
+  }, [])
   
   const handleDrop = (taskId, newStatus) => {
     if (draggedTask && draggedTask.status !== newStatus) {
@@ -503,12 +537,12 @@ export default function MissionControlSync() {
       </header>
 
       {error && (
-        <div style={styles.errorBanner}>
+        <div style={styles.errorBanner} role="alert">
           {error}
         </div>
       )}
       {notificationsError && (
-        <div style={styles.errorBanner}>
+        <div style={styles.errorBanner} role="alert">
           {notificationsError}
         </div>
       )}
@@ -917,16 +951,11 @@ function TaskHistory({ taskHistory, comments, taskActivity, fetchTraceDetails, f
               <div key={entry.commit?.hash || `commit-${entry.timestamp}-${entry.agent}`} style={{ ...styles.commitEntry, borderLeft: `4px solid ${borderColors.commit}` }}>
                 <div style={styles.commitHeader}>
                   <span>{icon}</span>
-                  <code 
-                    style={{...styles.commitHash, cursor: 'pointer'}} 
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      fetchTraceDetails(entry.commit.hash)
-                    }}
-                    title="Click to view trace details"
-                  >
-                    {entry.commit.shortHash}
-                  </code>
+                  <CommitHashButton
+                    shortHash={entry.commit.shortHash}
+                    fullHash={entry.commit.hash}
+                    onOpenTrace={fetchTraceDetails}
+                  />
                   <span style={styles.commitAgent}>@{entry.agent}</span>
                   <span style={styles.commentTimeRight}>{formatTime(entry.timestamp)}</span>
                 </div>
@@ -1130,16 +1159,11 @@ function TimelineEntry({ entry, formatTime, onSelectTask, fetchTraceDetails }) {
       <div style={{ ...styles.timelineItem, borderLeftColor: borderColor }} onClick={handleClick}>
         <div style={styles.timelineItemTop}>
           <span>{icon}</span>
-          <code 
-            style={{...styles.commitHash, cursor: 'pointer'}} 
-            onClick={(e) => {
-              e.stopPropagation()
-              fetchTraceDetails(entry.commit.hash)
-            }}
-            title="Click to view trace details"
-          >
-            {entry.commit.shortHash}
-          </code>
+          <CommitHashButton
+            shortHash={entry.commit.shortHash}
+            fullHash={entry.commit.hash}
+            onOpenTrace={fetchTraceDetails}
+          />
           <span style={styles.commitAgent}>@{entry.agent}</span>
           <span style={styles.activityTime}>{formatTime(entry.timestamp)}</span>
         </div>
@@ -1375,6 +1399,18 @@ const styles = {
   commitEntry: { background: '#0d1117', border: '1px solid #1a2332', borderRadius: 8, padding: '12px 16px' },
   commitHeader: { display: 'flex', alignItems: 'center', gap: 10, marginBottom: 6 },
   commitHash: { fontSize: 13, fontWeight: 600, color: '#58a6ff', background: '#0d1117', padding: '2px 6px', borderRadius: 4, fontFamily: 'monospace' },
+  commitHashBtn: {
+    fontSize: 13,
+    fontWeight: 600,
+    color: '#58a6ff',
+    background: '#0d1117',
+    padding: '2px 6px',
+    borderRadius: 4,
+    fontFamily: 'monospace',
+    border: 'none',
+    cursor: 'pointer',
+    lineHeight: 'inherit',
+  },
   commitAgent: { fontSize: 13, color: '#10b981', fontWeight: 500 },
   commitMessage: { fontSize: 14, color: '#ccc', lineHeight: 1.4 },
   commitDiff: { fontSize: 12, color: '#666', marginTop: 4, fontFamily: 'monospace' },
