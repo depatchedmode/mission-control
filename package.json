@@ -8,8 +8,8 @@
   },
   "scripts": {
     "sync": "node automerge-sync-server.js",
-    "test": "node --test --test-skip-pattern=\"GAP:\"",
-    "test:gaps": "node --test test/fitness-gaps.test.js",
+    "test": "node --test --test-force-exit --test-skip-pattern=\"GAP:\"",
+    "test:gaps": "node --test --test-force-exit test/fitness-gaps.test.js test/sync-use-cases.test.js",
     "ui:build": "npm run build --prefix ui-prototype"
   },
   "keywords": [

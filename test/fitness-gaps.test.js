@@ -24,7 +24,7 @@ import {
   authedGet,
   getDoc,
   createTask,
-  wsUrl,
+  nativeAutomergeWsUrl,
 } from '../support/resources.js'
 
 const AUTOMERGE_SYNC_PROBE_TIMEOUT_MS = 3000
@@ -75,7 +75,7 @@ function suppressAutomergeRepoFailureLogs() {
 // This test connects a real Automerge Repo with its native
 // WebSocketClientAdapter to the running server. The adapter sends
 // CBOR-encoded join/sync messages, but the server expects JSON —
-// so the handshake never completes and no CRDT sync occurs.
+// native sync is served on /automerge; legacy JSON remains on /.
 //
 // When Mission Control adds true Automerge sync support, this
 // test will start passing.
@@ -85,12 +85,12 @@ describe('GAP: true CRDT sync via WebSocket', () => {
   it('Automerge Repo peer can sync with the server via WebSocket', async () => {
     await withStartedServer({}, async server => {
       const { ticket } = await authedPost(server, '/automerge/ws-ticket', {})
-      const transportUrl = wsUrl(server, `/?ticket=${ticket}`)
+      const transportUrl = nativeAutomergeWsUrl(server, { ticket })
       const { url: documentUrl } = await authedGet(server, '/automerge/url')
 
       // Connect a real Automerge Repo using its native WS adapter.
       // The adapter sends CBOR-encoded binary messages (join, sync);
-      // the server only understands JSON — so this will fail.
+      // the server must accept CBOR on /automerge for this to pass.
       // Use a long retry interval so a failed handshake does not
       // immediately consume the single-use WS ticket on reconnect.
       const adapter = new WebSocketClientAdapter(transportUrl, 60_000)
@@ -100,9 +100,7 @@ describe('GAP: true CRDT sync via WebSocket', () => {
       try {
         // In a working CRDT sync setup, clients can fetch the document
         // URL over HTTP and resolve that URL through the Automerge sync
-        // transport. Today the WebSocket endpoint still speaks custom
-        // JSON instead of the Automerge binary sync protocol, so the
-        // repo never resolves the requested document. The probe timeout
+        // transport. If native sync regresses, the repo will not resolve the document URL. The probe timeout
         // must exceed the adapter's 1s readiness fallback so a future
         // sync implementation still has time to request and resolve it.
         const handle = await findWithTimeout(
@@ -114,7 +112,7 @@ describe('GAP: true CRDT sync via WebSocket', () => {
 
         assert.ok(
           handle?.isReady() && doc?.name === 'Mission Control',
-          'Peer repo should resolve the server document URL via Automerge sync — FAILS because the WS endpoint still speaks JSON, not the CBOR-based Automerge sync protocol'
+          'Peer repo should resolve the server document URL via Automerge native WebSocket sync'
         )
       } finally {
         adapter.socket?.terminate?.()

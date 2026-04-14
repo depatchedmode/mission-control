@@ -30,9 +30,14 @@ This section describes **product intent**. The **Current implementation** sectio
 
 ## Current implementation
 
-What ships in **this repository today** is a **hub-and-spoke** deployment: a **sync server** holds the Automerge document, applies mutations, and **broadcasts document snapshots** to connected WebSocket clients. The **CLI** and any **external agent harnesses** talk to that server over **HTTP** only (no offline CLI path).
+What ships in **this repository today** is a **hub-and-spoke** deployment: a **sync server** holds the Automerge document, applies mutations over **HTTP**, and serves **two WebSocket surfaces** on the same port:
 
-**This topology is the current supported runtime. Peer-to-peer replica sync (with partitions and automatic merge between replicas) is a product goal—not yet implemented here.**
+- **Legacy JSON WebSocket** (default path `/`) — snapshot push for the Vite dev UI (`document-state` / `document-update`).
+- **Native Automerge Repo WebSocket** (path `/automerge`) — CBOR wire protocol for **`@automerge/automerge-repo`** peers (CLI integrations, tests, and future clients). Use the same short-lived `?ticket=` flow as the UI; see `support/resources.js` (`nativeAutomergeWsUrl`).
+
+The **CLI** and harnesses talk to the server over **HTTP** for mutations (no offline CLI path). **True CRDT merge** across replicas is exercised when clients hold a **`Repo`** and sync via the **native** path; concurrent HTTP PATCH requests remain **last-writer-wins at the HTTP boundary**.
+
+**Multi-hub federation and operator-specific satellite docs remain roadmap items** (see GitHub #26 and `.cursor/plans/multi-replica-sync-roadmap.plan.md`).
 
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
@@ -59,7 +64,7 @@ What ships in **this repository today** is a **hub-and-spoke** deployment: a **s
 |-----------|----------|---------|
 | **mc CLI** | `bin/mc.js` | Primary interface for task management (HTTP client to sync server) |
 | **Automerge Store** | `lib/automerge-store.js` | Persistence + CRDT document logic (used by the sync server) |
-| **Sync Server** | `automerge-sync-server.js` | HTTP + WebSocket **hub** for the current deployment |
+| **Sync Server** | `automerge-sync-server.js` | HTTP + **dual** WebSocket hub (JSON snapshots + **native** Automerge Repo on `/automerge`) |
 | **UI Dev Client** | `ui-prototype/src/MissionControlSync.jsx` | Supported **development** UI client |
 
 ### Current supported runtime
@@ -203,6 +208,11 @@ Binary CRDT data lives under a `.mission-control/` directory.
 ### Sync
 See **Automerge Document** above for where the document URL file lives (`.mission-control-url` by default, or `document-url` under `.mission-control` when using `MC_STORAGE_PATH`). The sync server defaults to HTTP `8004` and WebSocket `8005` and can be configured with environment variables.
 
+**WebSocket paths (same `MC_WS_PORT`):**
+
+- `/` — legacy **JSON** protocol for the dev UI (after auth / ticket).
+- `/automerge` — **native Automerge Repo** sync (`WebSocketClientAdapter`); authenticate with `?ticket=` (or legacy `?token=` when enabled). Fetch the document URL from `GET /automerge/url` over HTTP, then `repo.find(url)` on the peer.
+
 #### Security Configuration
 The sync server requires an API token by default.
 
@@ -253,7 +263,7 @@ npm install --prefix ui-prototype
 npm run ui:build
 ```
 
-`GAP:`-prefixed suites under `test/` are reserved for intentionally failing roadmap/specification checks. They remain runnable through `npm run test:gaps`, but `npm test` excludes them by default.
+`GAP:`-prefixed suites under `test/` include roadmap checks; some (for example native Automerge sync) are expected to **pass** once implemented. `npm run test:gaps` also runs `test/sync-use-cases.test.js` (UC1–UC3). `npm test` excludes `GAP:` names by default.
 
 ### Sync Server
 Same as [Quick Start](#quick-start): `MC_API_TOKEN="$MC_API_TOKEN" npm run sync` (HTTP `8004`, WebSocket `8005` by default). Run from the repo root (or set `MC_STORAGE_PATH`) so `.mission-control` lands where you expect.
@@ -270,8 +280,8 @@ Same as [Quick Start](#quick-start): `MC_API_TOKEN="$MC_API_TOKEN" npm run sync`
 
 ### Phase 2: Real-Time Sync (current hub)
 - WebSocket sync server (`automerge-sync-server.js`)
-- Multi-session document sync over WebSockets
-- Conflict-free concurrent structured edits at the CRDT layer (server-side)
+- Legacy **JSON** snapshot sync for the dev UI; **native Automerge Repo** WebSocket on `/automerge` for peer `Repo` clients
+- Integration tests: `test/sync-use-cases.test.js` (UC1–UC3) and fitness GAP 1 (`npm run test:gaps`)
 
 ### Phase 3: Patchwork Features
 - Timeline view with rich context
