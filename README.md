@@ -39,6 +39,20 @@ The **CLI** and harnesses talk to the server over **HTTP** for mutations (no off
 
 **Multi-hub federation and operator-specific satellite docs remain roadmap items** (see GitHub #26 and `.cursor/plans/multi-replica-sync-roadmap.plan.md`).
 
+### Multi-replica acceptance status
+
+Shipped UCs are covered in `test/sync-use-cases.test.js`.
+
+| Use case | Status |
+|----------|--------|
+| UC1: two actors, one hub, concurrent peer edits | Shipped |
+| UC2: one actor, two replicas | Shipped |
+| UC3: two actors, two replicas, connected cross-replica merge | Shipped |
+| UC4: local-first disconnect, reconnect, merge | Shipped |
+| Multi-hub federation / partition stress | Not shipped; roadmap only |
+
+**Current boundary:** the repository supports a **single hub** with native Automerge peers. Do **not** run multiple hubs against the same NodeFS storage directory without additional coordination.
+
 ```
 ┌──────────────────────────────────────────────────────────────────────┐
 │                        MISSION CONTROL                                │
@@ -255,7 +269,7 @@ Behavior notes:
 # Supported passing suites
 npm test
 
-# Opt-in roadmap/gap specs (may fail until the product catches up)
+# GAP and roadmap suites
 npm run test:gaps
 
 # Install UI dependencies once, then verify the Vite build from repo root
@@ -263,7 +277,7 @@ npm install --prefix ui-prototype
 npm run ui:build
 ```
 
-`GAP:`-prefixed suites under `test/` include roadmap checks; some (for example native Automerge sync) are expected to **pass** once implemented. `npm run test:gaps` also runs `test/sync-use-cases.test.js` (UC1–UC3). `npm test` excludes `GAP:` names by default.
+`GAP:`-prefixed suites under `test/` include roadmap checks and regression guards. `npm run test:gaps` runs those GAP suites plus `test/sync-use-cases.test.js` (UC1–UC4). `npm test` excludes `GAP:` names by default, but still includes the UC acceptance suite.
 
 ### Sync Server
 Same as [Quick Start](#quick-start): `MC_API_TOKEN="$MC_API_TOKEN" npm run sync` (HTTP `8004`, WebSocket `8005` by default). Run from the repo root (or set `MC_STORAGE_PATH`) so `.mission-control` lands where you expect.
@@ -281,7 +295,7 @@ Same as [Quick Start](#quick-start): `MC_API_TOKEN="$MC_API_TOKEN" npm run sync`
 ### Phase 2: Real-Time Sync (current hub)
 - WebSocket sync server (`automerge-sync-server.js`)
 - Legacy **JSON** snapshot sync for the dev UI; **native Automerge Repo** WebSocket on `/automerge` for peer `Repo` clients
-- Integration tests: `test/sync-use-cases.test.js` (UC1–UC3) and fitness GAP 1 (`npm run test:gaps`)
+- Integration tests: `test/sync-use-cases.test.js` (UC1–UC4) and fitness GAP 1 (`npm run test:gaps`)
 
 ### Phase 3: Patchwork Features
 - Timeline view with rich context

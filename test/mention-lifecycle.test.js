@@ -22,6 +22,7 @@ import {
   authedDelete,
   getDoc,
   createTask,
+  waitFor,
 } from '../support/resources.js'
 
 function expectedIdempotencyKey(commentId, toAgent) {
@@ -33,6 +34,18 @@ function expectedIdempotencyKey(commentId, toAgent) {
 async function getPendingMentions(server, agent) {
   const suffix = agent ? `?agent=${encodeURIComponent(agent)}` : ''
   const { mentions } = await authedGet(server, `/automerge/mentions/pending${suffix}`)
+  return mentions
+}
+
+async function waitForPendingMentions(server, agent, expectedCount, description) {
+  let mentions = []
+  await waitFor(
+    async () => {
+      mentions = await getPendingMentions(server, agent)
+      return mentions.length === expectedCount
+    },
+    { timeoutMs: 500, description }
+  )
   return mentions
 }
 
@@ -178,7 +191,7 @@ describe('mention lifecycle', () => {
   })
 
   it('claimed mentions become pending again after lease expiry', async () => {
-    await withStartedServer({ mentionClaimTtlMs: 25 }, async server => {
+    await withStartedServer({ mentionClaimTtlMs: 75 }, async server => {
       const taskId = await createTask(server)
 
       await authedPost(server, '/automerge/comment', {
@@ -196,16 +209,20 @@ describe('mention lifecycle', () => {
       const hidden = await getPendingMentions(server, 'bob')
       assert.equal(hidden.length, 0)
 
-      await delay(40)
-
-      const afterExpiry = await getPendingMentions(server, 'bob')
+      await delay(90)
+      const afterExpiry = await waitForPendingMentions(
+        server,
+        'bob',
+        1,
+        'mention to reappear after lease expiry'
+      )
       assert.equal(afterExpiry.length, 1)
       assert.equal(afterExpiry[0].id, mentionId)
     })
   })
 
   it('expired claim tokens cannot ack or release before a mention is reclaimed', async () => {
-    await withStartedServer({ mentionClaimTtlMs: 20 }, async server => {
+    await withStartedServer({ mentionClaimTtlMs: 75 }, async server => {
       const taskId = await createTask(server)
 
       await authedPost(server, '/automerge/comment', {
@@ -220,7 +237,7 @@ describe('mention lifecycle', () => {
       const claim = await authedPost(server, `/automerge/mentions/${mentionId}/claim`, {})
       assert.ok(claim.claimed)
 
-      await delay(35)
+      await delay(90)
 
       const staleDeliver = await authedPost(server, `/automerge/mentions/${mentionId}/deliver`, {
         claimToken: claim.claimToken,
@@ -234,7 +251,12 @@ describe('mention lifecycle', () => {
       assert.equal(staleRelease.status, 409)
       assert.match(staleRelease.error, /claim token mismatch/i)
 
-      const pendingAgain = await getPendingMentions(server, 'bob')
+      const pendingAgain = await waitForPendingMentions(
+        server,
+        'bob',
+        1,
+        'expired mention to return to the pending queue'
+      )
       assert.equal(pendingAgain.length, 1)
       assert.equal(pendingAgain[0].id, mentionId)
 
@@ -293,7 +315,7 @@ describe('mention lifecycle', () => {
   })
 
   it('stale claim tokens cannot release or deliver a renewed claim', async () => {
-    await withStartedServer({ mentionClaimTtlMs: 20 }, async server => {
+    await withStartedServer({ mentionClaimTtlMs: 75 }, async server => {
       const taskId = await createTask(server)
 
       await authedPost(server, '/automerge/comment', {
@@ -308,7 +330,7 @@ describe('mention lifecycle', () => {
       const firstClaim = await authedPost(server, `/automerge/mentions/${mentionId}/claim`, {})
       assert.ok(firstClaim.claimed)
 
-      await delay(35)
+      await delay(90)
 
       const secondClaim = await authedPost(server, `/automerge/mentions/${mentionId}/claim`, {})
       assert.ok(secondClaim.claimed)

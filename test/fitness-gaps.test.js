@@ -1,30 +1,30 @@
 #!/usr/bin/env node
 
 /**
- * Fitness Gaps: Tests that document known issues.
+ * Fitness gaps and roadmap contracts.
  *
- * These tests describe the EXPECTED behavior based on the project's
- * positioning claims. They fail today, serving as a roadmap for
- * closing the gap between what Mission Control claims and what it does.
+ * GAP suites document areas where the product still trails its stated
+ * direction, but they also keep shipped roadmap claims from regressing
+ * after the gap has been closed.
  *
- * When a test starts passing, the corresponding issue has been fixed.
- *
- * GAP suites stay runnable, but are excluded from `npm test`.
- * Run them explicitly with `npm run test:gaps`.
+ * `npm test` excludes `GAP:` suites by name. `npm run test:gaps` runs
+ * these GAP specs plus the UC sync acceptance suite.
  */
 
 import { describe, it } from 'node:test'
 import assert from 'node:assert/strict'
+import { setTimeout as delay } from 'node:timers/promises'
 import { Repo, parseAutomergeUrl } from '@automerge/automerge-repo'
 import { WebSocketClientAdapter } from '@automerge/automerge-repo-network-websocket'
 import {
   withStartedServer,
-  authedPost,
+  mintWsTicket,
   authedPatch,
   authedGet,
   getDoc,
   createTask,
   nativeAutomergeWsUrl,
+  NATIVE_AUTOMERGE_RETRY_MS,
 } from '../support/resources.js'
 
 const AUTOMERGE_SYNC_PROBE_TIMEOUT_MS = 3000
@@ -67,24 +67,24 @@ function suppressAutomergeRepoFailureLogs() {
 // ─────────────────────────────────────────────────────────────────
 // GAP 1: True CRDT merge is never exercised
 //
-// The positioning says "CRDT: conflict-free concurrent edits" but
-// all writes are serialized through a single HTTP server. The
-// WebSocket endpoint speaks a custom JSON protocol (document-state /
-// document-update), NOT the Automerge binary sync protocol (CBOR).
+// HTTP writes are still serialized through a single hub, so true
+// CRDT merge is proven by native Repo peers rather than HTTP PATCHes.
+// Mission Control now exposes both WebSocket surfaces on the same port:
+// legacy JSON on `/` and native Automerge sync (CBOR) on `/automerge`.
 //
 // This test connects a real Automerge Repo with its native
-// WebSocketClientAdapter to the running server. The adapter sends
-// CBOR-encoded join/sync messages, but the server expects JSON —
-// native sync is served on /automerge; legacy JSON remains on /.
+// WebSocketClientAdapter to the running server and verifies the thin
+// native-wire contract: a peer can resolve the workspace document URL
+// over `/automerge`.
 //
-// When Mission Control adds true Automerge sync support, this
-// test will start passing.
+// Functional merge behavior lives in `test/sync-use-cases.test.js`
+// (UC1–UC4). This GAP stays as a lower-level regression guard.
 // ─────────────────────────────────────────────────────────────────
 
 describe('GAP: true CRDT sync via WebSocket', () => {
   it('Automerge Repo peer can sync with the server via WebSocket', async () => {
     await withStartedServer({}, async server => {
-      const { ticket } = await authedPost(server, '/automerge/ws-ticket', {})
+      const ticket = await mintWsTicket(server)
       const transportUrl = nativeAutomergeWsUrl(server, { ticket })
       const { url: documentUrl } = await authedGet(server, '/automerge/url')
 
@@ -93,7 +93,7 @@ describe('GAP: true CRDT sync via WebSocket', () => {
       // the server must accept CBOR on /automerge for this to pass.
       // Use a long retry interval so a failed handshake does not
       // immediately consume the single-use WS ticket on reconnect.
-      const adapter = new WebSocketClientAdapter(transportUrl, 60_000)
+      const adapter = new WebSocketClientAdapter(transportUrl, NATIVE_AUTOMERGE_RETRY_MS)
       const peerRepo = new Repo({ network: [adapter] })
       const restoreLog = suppressAutomergeRepoFailureLogs()
 
@@ -118,7 +118,7 @@ describe('GAP: true CRDT sync via WebSocket', () => {
         adapter.socket?.terminate?.()
         try {
           await peerRepo.shutdown()
-          await new Promise(resolve => setTimeout(resolve, 50))
+          await delay(50)
         } finally {
           restoreLog()
         }
