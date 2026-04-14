@@ -164,3 +164,12 @@ export function nextWsMessage(ws, timeoutMs = 2000) {
     })
   })
 }
+
+/** Path for Automerge Repo native (CBOR) WebSocket sync (see automerge-sync-server.js). */
+export const NATIVE_AUTOMERGE_WS_PATH = '/automerge'
+
+export function nativeAutomergeWsUrl(server, query = {}) {
+  const q = new URLSearchParams(query)
+  const suffix = q.toString() ? `?${q}` : ''
+  return wsUrl(server, `${NATIVE_AUTOMERGE_WS_PATH}${suffix}`)
+}

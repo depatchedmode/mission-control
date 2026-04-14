@@ -8,6 +8,7 @@
  */
 
 import { WebSocketServer } from 'ws'
+import { WebSocketServerAdapter } from '@automerge/automerge-repo-network-websocket'
 import { AutomergeStore } from './lib/automerge-store.js'
 import express from 'express'
 import crypto from 'crypto'
@@ -19,6 +20,17 @@ import { parseGithubRepo } from './lib/github-remote.js'
 
 const DEFAULT_HTTP_PORT = 8004
 const DEFAULT_WS_PORT = 8005
+
+/** WebSocket path for Automerge Repo native (CBOR) sync — distinct from legacy JSON UI sync. */
+const NATIVE_AUTOMERGE_WS_PATH = '/automerge'
+
+function wsUpgradePathname(req) {
+  try {
+    return new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`).pathname
+  } catch {
+    return '/'
+  }
+}
 
 function defaultAllowedOrigins(httpPort) {
   return [
@@ -85,7 +97,9 @@ class AutomergeSyncServer {
     this.store = options.store || new AutomergeStore(storeOptions)
     this.connectedClients = new Set()
     this.app = express()
-    this.wss = null
+    this.wssJson = null
+    this.nativeWsServer = null
+    this.automergeWsAdapter = null
     this.httpServer = null
     this.wsHttpServer = null
     this.host = options.host ?? env.MC_BIND_HOST ?? '127.0.0.1'
@@ -136,7 +150,8 @@ class AutomergeSyncServer {
     
     // Setup WebSocket for real-time sync
     this.setupWebSocketServer()
-    
+    this.store.repo.networkSubsystem.addNetworkAdapter(this.automergeWsAdapter)
+
     // Start HTTP server
     this.httpServer = await new Promise((resolve, reject) => {
       const server = this.app.listen(this.httpPort, this.host, () => resolve(server))
@@ -179,10 +194,15 @@ class AutomergeSyncServer {
     }
     this.connectedClients.clear()
 
-    if (this.wss) {
-      await new Promise(resolve => this.wss.close(() => resolve()))
-      this.wss = null
+    if (this.wssJson) {
+      await new Promise(resolve => this.wssJson.close(() => resolve()))
+      this.wssJson = null
     }
+    if (this.nativeWsServer) {
+      await new Promise(resolve => this.nativeWsServer.close(() => resolve()))
+      this.nativeWsServer = null
+    }
+    this.automergeWsAdapter = null
 
     await this.closeServer(this.wsHttpServer)
     await this.closeServer(this.httpServer)
@@ -795,7 +815,10 @@ class AutomergeSyncServer {
   }
   
   setupWebSocketServer() {
-    this.wss = new WebSocketServer({ noServer: true })
+    this.wssJson = new WebSocketServer({ noServer: true })
+    this.nativeWsServer = new WebSocketServer({ noServer: true })
+    this.automergeWsAdapter = new WebSocketServerAdapter(this.nativeWsServer)
+
     this.wsHttpServer = createServer((req, res) => {
       const origin = req.headers.origin
 
@@ -839,22 +862,23 @@ class AutomergeSyncServer {
         return
       }
 
-      this.wss.handleUpgrade(req, socket, head, ws => {
-        this.wss.emit('connection', ws, req)
+      const pathname = wsUpgradePathname(req)
+      const target = pathname === NATIVE_AUTOMERGE_WS_PATH ? this.nativeWsServer : this.wssJson
+      target.handleUpgrade(req, socket, head, ws => {
+        target.emit('connection', ws, req)
       })
     })
-    
-    this.wss.on('connection', (ws, req) => {
-      this.logger.log?.('🔌 Frontend client connected')
+
+    this.wssJson.on('connection', (ws, req) => {
+      this.logger.log?.('🔌 Frontend client connected (legacy JSON)')
       this.connectedClients.add(ws)
-      
-      // Send current document state immediately
+
       const doc = this.store.getDoc()
       ws.send(JSON.stringify({
         type: 'document-state',
         doc: doc
       }))
-      
+
       ws.on('message', async (message) => {
         try {
           const data = JSON.parse(message.toString())
@@ -867,14 +891,14 @@ class AutomergeSyncServer {
           }))
         }
       })
-      
+
       ws.on('close', () => {
         this.logger.log?.('🔌 Frontend client disconnected')
         this.connectedClients.delete(ws)
       })
     })
-    
-    this.logger.log?.('🔄 WebSocket server configured')
+
+    this.logger.log?.('🔄 WebSocket: legacy JSON on / ; native Automerge Repo on ' + NATIVE_AUTOMERGE_WS_PATH)
   }
 
   rejectWebSocketUpgrade(socket, statusCode, statusText, payload) {
