@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 import Markdown from 'react-markdown'
 import remarkGfm from 'remark-gfm'
 import './pardner.css'
+import { createOperationId } from './operation-id.js'
 
 const STATUSES = ['backlog', 'up-next', 'in-progress', 'review', 'completed']
 const LABELS = {
@@ -200,7 +201,7 @@ export default function Pardner() {
       return null
     }
     const operation = replay || {
-      operationId: crypto.randomUUID(),
+      operationId: createOperationId(),
       actorId: actor,
       type,
       payload,
