@@ -6,5 +6,7 @@
 - [Implementation evidence](PARDNER-EVIDENCE.md)
 - [Commit and trace attribution](AGENT-TRACE.md)
 - [Two-machine rehearsal](PARDNER-REHEARSAL.md)
+- [Three collaboration modes](PARDNER-COLLABORATION-MODES.md)
+- [Remote VM test and results](PARDNER-REMOTE-TEST.md)
 
 Product direction and setup are in the root [README.md](../README.md).
