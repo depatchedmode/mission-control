@@ -1,235 +1,68 @@
-#!/usr/bin/env node
-
-/**
- * Fitness Test: Task Mutations & Activity Feed
- *
- * Validates that the full task lifecycle (CRUD) works correctly
- * and that the activity feed faithfully records all changes.
- */
-
-import { describe, it } from 'node:test'
+import { it } from 'node:test'
 import assert from 'node:assert/strict'
-import {
-  withStartedServer,
-  authedPost,
-  authedPatch,
-  authedGet,
-  getDoc,
-  createTask,
-} from '../support/resources.js'
+import { withWorkspaceServer } from '../support/workspace-test.js'
 
-describe('task mutations', () => {
-  it('creates a task with all fields', async () => {
-    await withStartedServer({}, async server => {
-      const result = await authedPost(server, '/automerge/task', {
-        title: 'Full task',
-        description: 'A detailed description',
-        priority: 'p0',
-        assignee: 'gary',
-        tags: ['urgent', 'backend'],
-        status: 'in-progress',
-        agent: 'test-agent',
-      })
-
-      assert.ok(result.success)
-      const doc = await getDoc(server)
-      const task = doc.tasks[result.taskId]
-
-      assert.equal(task.title, 'Full task')
-      assert.equal(task.description, 'A detailed description')
-      assert.equal(task.priority, 'p0')
-      assert.equal(task.assignee, 'gary')
-      assert.deepEqual(task.tags, ['urgent', 'backend'])
-      assert.equal(task.status, 'in-progress')
-      assert.ok(task.created_at)
-      assert.ok(task.updated_at)
+it('creates every task field with human attribution and an atomic operation record', async () => {
+  await withWorkspaceServer(async ({ operation, context }) => {
+    const fields = { title: 'Complete task', description: 'Full description', priority: 'p1', status: 'up-next', assignee: 'builder', tags: ['release', 'offline'], order: 10, type: 'task' }
+    const receipt = await operation('task.create', fields)
+    assert.equal(receipt.savedLocally, true)
+    const result = await context(receipt.result.taskId)
+    for (const [field, value] of Object.entries(fields)) assert.deepEqual(result.task[field], value)
+    assert.equal(result.task.created_by, 'alice')
+    assert.equal(result.history.length, 1)
+    assert.equal(result.history[0].operationId, receipt.operationId)
+    assert.equal(result.history[0].changes.length, Object.keys(fields).length)
+  })
+})
+for (const [field, value] of Object.entries({ title: 'Changed title', description: 'Changed description', priority: 'p0', assignee: 'reviewer', status: 'review', tags: ['tested'] })) {
+  it(`updates ${field} with expected revisions and agent provenance`, async () => {
+    await withWorkspaceServer(async ({ create, update, context }) => {
+      const taskId = await create()
+      const before = await context(taskId)
+      const receipt = await update(taskId, { [field]: value }, 'builder')
+      assert.equal(receipt.httpStatus, 200)
+      const after = await context(taskId)
+      assert.deepEqual(after.task[field], value)
+      assert.deepEqual(after.revisions[field], [receipt.operationId])
+      const event = after.history.find(entry => entry.operationId === receipt.operationId)
+      assert.equal(event.actorId, 'builder')
+      assert.deepEqual(event.changes, [{ field, old: before.task[field], new: value }])
     })
   })
-
-  it('updates status field and records activity', async () => {
-    await withStartedServer({}, async server => {
-      const taskId = await createTask(server, { title: 'Status test' })
-
-      const result = await authedPatch(server, `/automerge/task/${taskId}`, {
-        status: 'in-progress',
-        agent: 'gary',
-      })
-
-      assert.ok(result.success)
-      assert.equal(result.changes.length, 1)
-      assert.equal(result.changes[0].field, 'status')
-      assert.equal(result.changes[0].old, 'todo')
-      assert.equal(result.changes[0].new, 'in-progress')
-
-      const doc = await getDoc(server)
-      assert.equal(doc.tasks[taskId].status, 'in-progress')
-    })
+}
+it('normalizes old status vocabulary and follows the full task lifecycle', async () => {
+  await withWorkspaceServer(async ({ create, update, context }) => {
+    const taskId = await create({ status: 'todo' })
+    assert.equal((await context(taskId)).task.status, 'backlog')
+    for (const [input, expected] of [['up-next', 'up-next'], ['in-progress', 'in-progress'], ['in-review', 'review'], ['completed', 'completed']]) {
+      assert.equal((await update(taskId, { status: input })).httpStatus, 200)
+      assert.equal((await context(taskId)).task.status, expected)
+    }
+    assert.equal((await context(taskId)).history.length, 5)
   })
-
-  it('updates priority field', async () => {
-    await withStartedServer({}, async server => {
-      const taskId = await createTask(server)
-
-      await authedPatch(server, `/automerge/task/${taskId}`, {
-        priority: 'p0',
-        agent: 'gary',
-      })
-
-      const doc = await getDoc(server)
-      assert.equal(doc.tasks[taskId].priority, 'p0')
-    })
+})
+it('safe replay adds no second history entry and stale writes leave intervening work intact', async () => {
+  await withWorkspaceServer(async ({ create, operation, context }) => {
+    const taskId = await create()
+    const before = await context(taskId)
+    const payload = { taskId, updates: { title: 'One change' }, expectedRevisions: { title: before.revisions.title } }
+    const first = await operation('task.update', payload, 'alice', 'retry-once')
+    const retry = await operation('task.update', payload, 'alice', 'retry-once')
+    assert.equal(retry.replayed, true)
+    assert.equal(retry.operationId, first.operationId)
+    const stale = await operation('task.update', { ...payload, updates: { title: 'Overwrite' } }, 'bob')
+    assert.equal(stale.code, 'STALE_UPDATE')
+    const after = await context(taskId)
+    assert.equal(after.task.title, 'One change')
+    assert.equal(after.history.length, 2)
   })
-
-  it('updates assignee field', async () => {
-    await withStartedServer({}, async server => {
-      const taskId = await createTask(server)
-
-      await authedPatch(server, `/automerge/task/${taskId}`, {
-        assignee: 'friday',
-        agent: 'gary',
-      })
-
-      const doc = await getDoc(server)
-      assert.equal(doc.tasks[taskId].assignee, 'friday')
-    })
-  })
-
-  it('updates title field', async () => {
-    await withStartedServer({}, async server => {
-      const taskId = await createTask(server)
-
-      await authedPatch(server, `/automerge/task/${taskId}`, {
-        title: 'Updated title',
-        agent: 'gary',
-      })
-
-      const doc = await getDoc(server)
-      assert.equal(doc.tasks[taskId].title, 'Updated title')
-    })
-  })
-
-  it('updates description field', async () => {
-    await withStartedServer({}, async server => {
-      const taskId = await createTask(server)
-
-      await authedPatch(server, `/automerge/task/${taskId}`, {
-        description: 'New description',
-        agent: 'gary',
-      })
-
-      const doc = await getDoc(server)
-      assert.equal(doc.tasks[taskId].description, 'New description')
-    })
-  })
-
-  it('full status lifecycle: todo → in-progress → review → completed', async () => {
-    await withStartedServer({}, async server => {
-      const taskId = await createTask(server, { title: 'Lifecycle task' })
-
-      const transitions = ['in-progress', 'review', 'completed']
-      for (const status of transitions) {
-        const result = await authedPatch(server, `/automerge/task/${taskId}`, {
-          status,
-          agent: 'gary',
-        })
-        assert.ok(result.success)
-      }
-
-      const doc = await getDoc(server)
-      assert.equal(doc.tasks[taskId].status, 'completed')
-    })
-  })
-
-  it('no-op update produces no changes', async () => {
-    await withStartedServer({}, async server => {
-      const taskId = await createTask(server, { title: 'No-op test', status: 'todo' })
-
-      const result = await authedPatch(server, `/automerge/task/${taskId}`, {
-        status: 'todo', // same as current
-        agent: 'gary',
-      })
-
-      assert.ok(result.success)
-      assert.equal(result.changes.length, 0, 'No changes should be recorded')
-    })
-  })
-
-  it('activity feed records task creation', async () => {
-    await withStartedServer({}, async server => {
-      const taskId = await createTask(server, { agent: 'gary' })
-
-      const doc = await getDoc(server)
-      const creation = doc.activity.find(
-        a => a.type === 'task_created' && a.taskId === taskId
-      )
-
-      assert.ok(creation, 'Should have task_created activity')
-      assert.equal(creation.agent, 'gary')
-      assert.ok(creation.timestamp)
-    })
-  })
-
-  it('activity feed records task updates', async () => {
-    await withStartedServer({}, async server => {
-      const taskId = await createTask(server)
-
-      await authedPatch(server, `/automerge/task/${taskId}`, {
-        status: 'in-progress',
-        agent: 'gary',
-      })
-
-      const doc = await getDoc(server)
-      const update = doc.activity.find(
-        a => a.type === 'task_updated' && a.taskId === taskId
-      )
-
-      assert.ok(update, 'Should have task_updated activity')
-      assert.equal(update.agent, 'gary')
-    })
-  })
-
-  it('task history tracks changes for patchwork diff', async () => {
-    await withStartedServer({}, async server => {
-      const taskId = await createTask(server)
-
-      await authedPatch(server, `/automerge/task/${taskId}`, {
-        status: 'in-progress',
-        agent: 'gary',
-      })
-
-      await authedPatch(server, `/automerge/task/${taskId}`, {
-        priority: 'p0',
-        agent: 'friday',
-      })
-
-      const { history } = await authedGet(server, `/automerge/task/${taskId}/history`)
-      assert.ok(history.length >= 2, `Expected at least 2 history entries, got ${history.length}`)
-    })
-  })
-
-  it('multiple updates produce ordered activity entries', async () => {
-    await withStartedServer({}, async server => {
-      const taskId = await createTask(server)
-
-      await authedPatch(server, `/automerge/task/${taskId}`, {
-        status: 'in-progress',
-        agent: 'agent-1',
-      })
-      await authedPatch(server, `/automerge/task/${taskId}`, {
-        status: 'review',
-        agent: 'agent-2',
-      })
-
-      const doc = await getDoc(server)
-      const updates = doc.activity
-        .filter(a => a.type === 'task_updated' && a.taskId === taskId)
-
-      assert.equal(updates.length, 2)
-
-      // Verify timestamps are increasing
-      const t1 = new Date(updates[0].timestamp).getTime()
-      const t2 = new Date(updates[1].timestamp).getTime()
-      assert.ok(t1 <= t2, 'Activity entries should be in chronological order')
-    })
+})
+it('rejects empty changes without creating spurious task history', async () => {
+  await withWorkspaceServer(async ({ create, operation, context }) => {
+    const taskId = await create()
+    const result = await operation('task.update', { taskId, updates: {}, expectedRevisions: {} })
+    assert.equal(result.httpStatus, 400)
+    assert.equal((await context(taskId)).history.length, 1)
   })
 })

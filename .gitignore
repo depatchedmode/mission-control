@@ -7,3 +7,11 @@ ui-prototype/node_modules/
 ui-prototype/dist/
 .env
 .cursor/hooks/state/
+.pardner/
+.pardner-url
+output/playwright/
+output/acceptance/
+.DS_Store
+.playwright-cli/
+__pycache__/
+*.pyc

@@ -48,7 +48,7 @@ describe('findGitRoot', () => {
   let canonicalRepoPath;
 
   before(() => {
-    tempDir = createTempDir('mc-agent-trace-find-root-');
+    tempDir = createTempDir('pardner-agent-trace-find-root-');
     testRepoPath = createTestRepo(tempDir, 'find-root-test');
     canonicalRepoPath = realpathSync(testRepoPath);
   });
@@ -91,7 +91,7 @@ describe('getDiffStats', () => {
   let testRepoPath;
 
   before(() => {
-    tempDir = createTempDir('mc-agent-trace-diff-stats-');
+    tempDir = createTempDir('pardner-agent-trace-diff-stats-');
     testRepoPath = createTestRepo(tempDir, 'diff-stats-test');
   });
   
@@ -129,7 +129,7 @@ describe('getLatestCommit', () => {
   let testRepoPath;
 
   before(() => {
-    tempDir = createTempDir('mc-agent-trace-latest-commit-');
+    tempDir = createTempDir('pardner-agent-trace-latest-commit-');
     testRepoPath = createTestRepo(tempDir, 'latest-commit-test');
   });
   
@@ -155,7 +155,7 @@ describe('ensureTraceDir', () => {
   let testRepoPath;
 
   beforeEach(() => {
-    tempDir = createTempDir('mc-agent-trace-trace-dir-');
+    tempDir = createTempDir('pardner-agent-trace-trace-dir-');
     testRepoPath = createTestRepo(tempDir, 'trace-dir-test');
   });
   
@@ -211,7 +211,7 @@ describe('createTrace', () => {
   let testRepoPath;
 
   beforeEach(() => {
-    tempDir = createTempDir('mc-agent-trace-create-trace-');
+    tempDir = createTempDir('pardner-agent-trace-create-trace-');
     testRepoPath = createTestRepo(tempDir, 'create-trace-test');
   });
   
@@ -239,11 +239,11 @@ describe('createTrace', () => {
   });
   
   it('uses environment variables as fallback', () => {
-    const originalAgent = process.env.MC_AGENT;
-    const originalModel = process.env.MC_AGENT_MODEL;
+    const originalAgent = process.env.PARDNER_AGENT;
+    const originalModel = process.env.PARDNER_AGENT_MODEL;
     
-    process.env.MC_AGENT = 'env-agent';
-    process.env.MC_AGENT_MODEL = 'env-model';
+    process.env.PARDNER_AGENT = 'env-agent';
+    process.env.PARDNER_AGENT_MODEL = 'env-model';
     
     try {
       const { trace } = agentTrace.createTrace({
@@ -258,10 +258,10 @@ describe('createTrace', () => {
       assert.strictEqual(trace.agent.model, 'env-model');
     } finally {
       // Restore
-      if (originalAgent) process.env.MC_AGENT = originalAgent;
-      else delete process.env.MC_AGENT;
-      if (originalModel) process.env.MC_AGENT_MODEL = originalModel;
-      else delete process.env.MC_AGENT_MODEL;
+      if (originalAgent) process.env.PARDNER_AGENT = originalAgent;
+      else delete process.env.PARDNER_AGENT;
+      if (originalModel) process.env.PARDNER_AGENT_MODEL = originalModel;
+      else delete process.env.PARDNER_AGENT_MODEL;
     }
   });
 
@@ -300,7 +300,7 @@ describe('listTraces', () => {
   let testRepoPath;
 
   beforeEach(() => {
-    tempDir = createTempDir('mc-agent-trace-list-traces-');
+    tempDir = createTempDir('pardner-agent-trace-list-traces-');
     testRepoPath = createTestRepo(tempDir, 'list-traces-test');
   });
   
@@ -362,7 +362,7 @@ describe('getTraceByCommit', () => {
   let testRepoPath;
 
   beforeEach(() => {
-    tempDir = createTempDir('mc-agent-trace-get-trace-');
+    tempDir = createTempDir('pardner-agent-trace-get-trace-');
     testRepoPath = createTestRepo(tempDir, 'get-trace-test');
   });
   

@@ -1,27 +1,42 @@
 {
-  "name": "mission-control",
+  "name": "pardner",
   "version": "0.1.0",
   "description": "Automerge-backed task coordination with CLI, sync server, and UI",
   "type": "module",
+  "engines": {
+    "node": "24.11.1"
+  },
   "bin": {
-    "mc": "./bin/mc.js"
+    "pardner": "./bin/pardner.js"
   },
   "scripts": {
     "sync": "node automerge-sync-server.js",
-    "test": "node --test --test-force-exit --test-skip-pattern=\"GAP:\"",
-    "test:gaps": "node --test --test-force-exit test/fitness-gaps.test.js test/sync-use-cases.test.js",
+    "test": "npm run ui:build && node --test",
+    "test:gaps": "node --test test/fitness-gaps.test.js test/sync-use-cases.test.js",
+    "test:qualification": "node --test test/storage-durability.test.js test/conflict-qualification.test.js test/ticket-reconnect.test.js",
+    "test:runtime": "node --test test/workspace-operations.test.js test/workspace-runtime.test.js test/delivery-ledger.test.js",
+    "test:cli": "node --test test/pardner-cli-workflow.test.js test/pardner-cli-auth-fallback.test.js test/pardner-cli-mentions.test.js test/pardner-brand.test.js",
+    "test:ui": "npm run ui:build && node --test test/pardner-ui.test.js",
+    "test:acceptance": "node scripts/acceptance.js",
+    "verify": "node scripts/verify.js",
+    "smoke:native-peer": "node scripts/native-peer-smoke.js",
+    "stress:native-peer": "node scripts/stress-native-peer.js",
     "ui:build": "npm run build --prefix ui-prototype"
   },
   "keywords": [
-    "mission-control",
+    "pardner",
     "automerge",
     "task-tracking"
   ],
   "license": "MIT",
   "dependencies": {
-    "@automerge/automerge-repo": "^2.5.1",
-    "@automerge/automerge-repo-network-websocket": "^2.5.1",
+    "@automerge/automerge": "3.2.3",
+    "@automerge/automerge-repo": "2.5.1",
+    "@automerge/automerge-repo-network-websocket": "2.5.1",
     "express": "^4.18.2",
     "ws": "^8.14.2"
+  },
+  "devDependencies": {
+    "playwright": "1.62.1"
   }
 }

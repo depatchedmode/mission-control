@@ -1,187 +1,120 @@
-#!/usr/bin/env node
-/**
- * UC1–UC4: multi-replica coordination (native Automerge Repo WebSocket).
- * Run with: npm test or npm run test:gaps
- */
-
-import { describe, it } from 'node:test'
+import { it } from 'node:test'
 import assert from 'node:assert/strict'
+import { join } from 'node:path'
+import { randomUUID } from 'node:crypto'
+import { setTimeout as delay } from 'node:timers/promises'
+import { withWorkspaceServer } from '../support/workspace-test.js'
+import { WorkspaceRuntime } from '../lib/workspace-runtime.js'
+import { NetworkGate } from '../support/acceptance/network-gate.js'
 
-import {
-  withStartedServer,
-  authedGet,
-  authedPatch,
-  createTask,
-  closeNativePeer,
-  createTempDir,
-  disconnectNativePeer,
-  getDoc,
-  openNativePeer,
-  waitFor,
-} from '../support/resources.js'
-
-async function waitForTaskFields(resolveDoc, taskId, expected, label) {
-  await waitFor(
-    async () => {
-      const doc = await resolveDoc()
-      const task = doc?.tasks?.[taskId]
-      if (!task) return false
-      return Object.entries(expected).every(([key, value]) => task[key] === value)
-    },
-    { description: label }
-  )
+async function eventually(check) {
+  const deadline = Date.now() + 10000
+  while (!check()) {
+    assert.ok(Date.now() < deadline, 'Replicas must converge within ten seconds')
+    await delay(25)
+  }
 }
 
-describe('sync use cases (native Automerge WS)', () => {
-  it('UC1_two_actors_same_hub_concurrent_peer_edits_merge', async () => {
-    await withStartedServer({}, async server => {
-      const taskId = await createTask(server, { title: 'UC1', agent: 'seed' })
-      const dir1 = createTempDir('mc-peer-')
-      const dir2 = createTempDir('mc-peer-')
-      let p1
-      let p2
-      try {
-        p1 = await openNativePeer(server, dir1)
-        p2 = await openNativePeer(server, dir2)
+async function withReplicas(run) {
+  await withWorkspaceServer(async fixture => {
+    const { server, directory } = fixture
+    const gates = []
+    const replicas = []
+    const reopen = async index => {
+      const gate = gates[index]
+      const replica = new WorkspaceRuntime({ directory: join(directory, `replica-${index}`), role: 'replica',
+        hubUrl: gate.httpUrl, hubWsUrl: gate.wsUrl, token: 'test-token', retryMs: 100 })
+      replicas[index] = replica
+      await replica.init()
+      return replica
+    }
+    try {
+      for (let index = 0; index < 2; index++) {
+        gates.push(await new NetworkGate({ httpUrl: `http://127.0.0.1:${server.httpPort}`, wsUrl: `ws://127.0.0.1:${server.wsPort}/automerge` }).start())
+        await reopen(index)
+      }
+      const converge = () => eventually(() => replicas.every(replica => !replica.status().syncPending))
+      await converge()
+      await run({ ...fixture, gates, replicas, reopen, converge })
+    } finally {
+      const results = await Promise.allSettled(replicas.map(replica => replica.close()))
+      const gateResults = await Promise.allSettled(gates.map(gate => gate.close()))
+      for (const result of [...results, ...gateResults]) if (result.status === 'rejected') throw result.reason
+    }
+  })
+}
 
-        await Promise.all([
-          p1.handle.change(d => {
-            d.tasks[taskId].assignee = 'alice'
-            d.tasks[taskId].updated_at = new Date().toISOString()
-          }),
-          p2.handle.change(d => {
-            d.tasks[taskId].priority = 'p0'
-            d.tasks[taskId].updated_at = new Date().toISOString()
-          }),
-        ])
+function edit(replica, taskId, updates, actorId) {
+  const { revisions } = replica.workspace.taskContext(taskId)
+  return replica.workspace.execute({ operationId: randomUUID(), actorId, type: 'task.update',
+    payload: { taskId, updates, expectedRevisions: Object.fromEntries(Object.keys(updates).map(field => [field, revisions[field]])) } })
+}
 
-        await waitForTaskFields(
-          () => p1.handle.doc(),
-          taskId,
-          { assignee: 'alice', priority: 'p0' },
-          'UC1 convergence on peer A'
-        )
-        await waitForTaskFields(
-          () => p2.handle.doc(),
-          taskId,
-          { assignee: 'alice', priority: 'p0' },
-          'UC1 convergence on peer B'
-        )
-      } finally {
-        await closeNativePeer(p1)
-        await closeNativePeer(p2)
+it('UC1: two Actors on the same hub retain concurrent disjoint changes and attribution', { timeout: 20000 }, async () => {
+  await withWorkspaceServer(async ({ create, context, operation }) => {
+    const taskId = await create()
+    const { revisions } = await context(taskId)
+    const receipts = await Promise.all([
+      operation('task.update', { taskId, updates: { assignee: 'builder' }, expectedRevisions: { assignee: revisions.assignee } }, 'alice'),
+      operation('task.update', { taskId, updates: { priority: 'p0' }, expectedRevisions: { priority: revisions.priority } }, 'builder'),
+    ])
+    assert.ok(receipts.every(receipt => receipt.savedLocally))
+    const result = await context(taskId)
+    assert.equal(result.task.assignee, 'builder')
+    assert.equal(result.task.priority, 'p0')
+    assert.deepEqual(result.history.filter(event => event.type === 'task.update').map(event => event.actorId).sort(), ['alice', 'builder'])
+  })
+})
+
+for (const [name, actorIds] of [['UC2: one Actor on two replicas', ['alice', 'alice']], ['UC3: human and agent on two replicas', ['alice', 'builder']]]) {
+  it(`${name} merge offline changes with distinct replica provenance`, { timeout: 30000 }, async () => {
+    await withReplicas(async ({ create, context, gates, replicas, converge }) => {
+      const taskId = await create()
+      await eventually(() => replicas.every(replica => replica.workspace.handle.doc().tasks[taskId]))
+      gates.forEach(gate => gate.partition())
+      const receipts = await Promise.all([
+        edit(replicas[0], taskId, { description: 'From first replica' }, actorIds[0]),
+        edit(replicas[1], taskId, { priority: 'p0' }, actorIds[1]),
+      ])
+      assert.ok(receipts.every(receipt => receipt.savedLocally))
+      assert.notEqual(receipts[0].replicaId, receipts[1].replicaId)
+      gates.forEach(gate => gate.partition(false))
+      await converge()
+      for (const result of [await context(taskId), ...replicas.map(replica => replica.workspace.taskContext(taskId))]) {
+        assert.equal(result.task.description, 'From first replica')
+        assert.equal(result.task.priority, 'p0')
+        for (let index = 0; index < receipts.length; index++) {
+          const event = result.history.find(event => event.operationId === receipts[index].operationId)
+          assert.equal(event.actorId, actorIds[index])
+          assert.equal(event.replicaId, receipts[index].replicaId)
+        }
       }
     })
   })
+}
 
-  it('UC2_one_actor_two_replicas_converge', async () => {
-    await withStartedServer({}, async server => {
-      const taskId = await createTask(server, { title: 'UC2', agent: 'solo' })
-      const dir1 = createTempDir('mc-peer-')
-      const dir2 = createTempDir('mc-peer-')
-      let p1
-      let p2
-      try {
-        p1 = await openNativePeer(server, dir1)
-        p2 = await openNativePeer(server, dir2)
-
-        await p1.handle.change(d => {
-          d.tasks[taskId].description = 'from R1'
-          d.tasks[taskId].updated_at = new Date().toISOString()
-        })
-        await waitForTaskFields(
-          () => p2.handle.doc(),
-          taskId,
-          { description: 'from R1' },
-          'UC2 convergence on replica 2'
-        )
-      } finally {
-        await closeNativePeer(p1)
-        await closeNativePeer(p2)
-      }
-    })
-  })
-
-  it('UC3_two_actors_two_replicas_cross_replica_merge', async () => {
-    await withStartedServer({}, async server => {
-      const taskId = await createTask(server, { title: 'UC3', agent: 'seed' })
-      const dirA = createTempDir('mc-peer-')
-      const dirB = createTempDir('mc-peer-')
-      let pa
-      let pb
-      try {
-        pa = await openNativePeer(server, dirA)
-        pb = await openNativePeer(server, dirB)
-
-        await pa.handle.change(d => {
-          d.tasks[taskId].status = 'in-progress'
-          d.tasks[taskId].updated_at = new Date().toISOString()
-        })
-        await pb.handle.change(d => {
-          d.tasks[taskId].title = 'UC3 updated'
-          d.tasks[taskId].updated_at = new Date().toISOString()
-        })
-        await waitForTaskFields(
-          () => pa.handle.doc(),
-          taskId,
-          { status: 'in-progress', title: 'UC3 updated' },
-          'UC3 convergence on replica A'
-        )
-        await waitForTaskFields(
-          () => pb.handle.doc(),
-          taskId,
-          { status: 'in-progress', title: 'UC3 updated' },
-          'UC3 convergence on replica B'
-        )
-      } finally {
-        await closeNativePeer(pa)
-        await closeNativePeer(pb)
-      }
-    })
-  })
-
-  it('UC4_local_first_replica_recovers_after_disconnect_and_merges', async () => {
-    await withStartedServer({}, async server => {
-      const taskId = await createTask(server, { title: 'UC4', agent: 'seed' })
-      const dir = createTempDir('mc-peer-')
-      let peer
-      try {
-        peer = await openNativePeer(server, dir)
-        await disconnectNativePeer(peer)
-
-        await peer.handle.change(d => {
-          d.tasks[taskId].description = 'offline edit'
-          d.tasks[taskId].updated_at = new Date().toISOString()
-        })
-        assert.equal(peer.handle.doc().tasks[taskId].description, 'offline edit')
-
-        await authedPatch(server, `/automerge/task/${taskId}`, {
-          status: 'in-review',
-          agent: 'hub',
-        })
-
-        const hubWhileOffline = await authedGet(server, '/automerge/doc')
-        assert.equal(hubWhileOffline.doc.tasks[taskId].status, 'in-review')
-        assert.notEqual(hubWhileOffline.doc.tasks[taskId].description, 'offline edit')
-
-        await closeNativePeer(peer, { removeStorage: false })
-        peer = await openNativePeer(server, dir)
-
-        await waitForTaskFields(
-          () => peer.handle.doc(),
-          taskId,
-          { description: 'offline edit', status: 'in-review' },
-          'UC4 convergence on reconnected replica'
-        )
-        await waitForTaskFields(
-          () => getDoc(server),
-          taskId,
-          { description: 'offline edit', status: 'in-review' },
-          'UC4 convergence on hub'
-        )
-      } finally {
-        await closeNativePeer(peer)
-      }
-    })
+it('UC4: a persisted replica reopens offline and merges with work completed at the hub', { timeout: 30000 }, async () => {
+  await withReplicas(async ({ create, update, context, gates, replicas, reopen, converge }) => {
+    const taskId = await create()
+    await eventually(() => replicas.every(replica => replica.workspace.handle.doc().tasks[taskId]))
+    gates[0].partition()
+    const receipt = await edit(replicas[0], taskId, { description: 'Durable offline edit' }, 'builder')
+    assert.equal(receipt.savedLocally, true)
+    const identity = replicas[0].manifest.replicaId
+    await update(taskId, { status: 'review' })
+    assert.notEqual((await context(taskId)).task.description, 'Durable offline edit')
+    await replicas[0].close()
+    const started = Date.now()
+    const reopened = await reopen(0)
+    assert.ok(Date.now() - started < 5000)
+    assert.equal(reopened.manifest.replicaId, identity)
+    assert.equal(reopened.workspace.taskContext(taskId).task.description, 'Durable offline edit')
+    gates[0].partition(false)
+    await converge()
+    for (const result of [await context(taskId), ...replicas.map(replica => replica.workspace.taskContext(taskId))]) {
+      assert.equal(result.task.description, 'Durable offline edit')
+      assert.equal(result.task.status, 'review')
+      assert.equal(result.history.filter(event => event.operationId === receipt.operationId).length, 1)
+    }
   })
 })

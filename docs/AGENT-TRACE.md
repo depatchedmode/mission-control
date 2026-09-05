@@ -1,22 +1,22 @@
 # Agent Trace
 
-Commit attribution tracking for agent-assisted development. Every commit made through `mc commit` gets tagged with agent context for future audit trails.
+Commit attribution tracking for agent-assisted development. Every commit made through `pardner commit` gets tagged with agent context for future audit trails.
 
 ## Quick Start
 
 ```bash
 # Instead of: git commit -m "feat: add feature"
 # Use:
-mc commit -m "feat: add feature"
+pardner commit -m "feat: add feature"
 
-# Link to a Mission Control task
-mc commit -m "fix: resolve bug" --task task-abc123
+# Link to a Pardner task
+pardner commit -m "fix: resolve bug" --task task-abc123
 
 # View recent traced commits
-mc trace list
+pardner trace list
 
 # Show details for a specific commit
-mc trace show abc123
+pardner trace show abc123
 ```
 
 ## What Gets Captured
@@ -25,10 +25,10 @@ Each trace records:
 
 | Field | Source | Description |
 |-------|--------|-------------|
-| `agent.name` | `--agent` or `MC_AGENT` env | Who made the commit |
-| `agent.model` | `--model` or `MC_AGENT_MODEL` env | AI model used |
-| `agent.sessionKey` | `--session` or `MC_AGENT_SESSION_KEY` env | Session for context lookup |
-| `task` | `--task` flag | Linked Mission Control task |
+| `agent.name` | `--agent` or `PARDNER_AGENT` env | Who made the commit |
+| `agent.model` | `--model` or `PARDNER_AGENT_MODEL` env | AI model used |
+| `agent.sessionKey` | `--session` or `PARDNER_AGENT_SESSION_KEY` env | Session for context lookup |
+| `task` | `--task` flag | Linked Pardner task |
 | `commit.hash` | Git | Full commit SHA |
 | `commit.message` | Git | Commit message |
 | `commit.author` | Git | Git author |
@@ -38,34 +38,34 @@ Each trace records:
 
 ## Commands
 
-### `mc commit`
+### `pardner commit`
 
 Drop-in replacement for `git commit`. All standard git commit flags work.
 
 ```bash
 # Basic usage
-mc commit -m "message"
+pardner commit -m "message"
 
 # With all options
-mc commit -m "message" \
+pardner commit -m "message" \
   --task task-123 \
   --agent gary \
   --model claude-opus \
   --session sess-abc
 
 # All other flags pass through to git
-mc commit -am "message"           # Stage and commit
-mc commit --amend                 # Amend previous commit
-mc commit -m "msg" --no-verify    # Skip hooks
+pardner commit -am "message"           # Stage and commit
+pardner commit --amend                 # Amend previous commit
+pardner commit -m "msg" --no-verify    # Skip hooks
 ```
 
-### `mc trace list`
+### `pardner trace list`
 
 List recent traced commits in the current repo.
 
 ```bash
-mc trace list              # Last 20 traces
-mc trace list --limit 50   # Last 50 traces
+pardner trace list              # Last 20 traces
+pardner trace list --limit 50   # Last 50 traces
 ```
 
 Output:
@@ -83,13 +83,13 @@ Output:
     2 files changed, 10 insertions(+), 5 deletions(-)
 ```
 
-### `mc trace show`
+### `pardner trace show`
 
 Show full details for a specific commit.
 
 ```bash
-mc trace show abc123de    # Short hash works
-mc trace show abc123...   # Full hash works too
+pardner trace show abc123de    # Short hash works
+pardner trace show abc123...   # Full hash works too
 ```
 
 Output:
@@ -160,14 +160,14 @@ your-repo/
 Set these to avoid passing flags every time:
 
 ```bash
-export MC_AGENT=gary
-export MC_AGENT_MODEL=claude-opus
-export MC_AGENT_SESSION_KEY=agent:gary:main
+export PARDNER_AGENT=gary
+export PARDNER_AGENT_MODEL=claude-opus
+export PARDNER_AGENT_SESSION_KEY=agent:gary:main
 ```
 
 Then just:
 ```bash
-mc commit -m "message"  # Uses env vars automatically
+pardner commit -m "message"  # Uses env vars automatically
 ```
 
 Legacy aliases remain supported for compatibility:
@@ -193,7 +193,7 @@ This creates an audit trail from commit → agent → conversation → decisions
 
 ## Limitations
 
-- Only tracks commits made via `mc commit`
+- Only tracks commits made via `pardner commit`
 - No retroactive attribution for existing commits
 - Traces accumulate indefinitely (no auto-cleanup yet)
 - Session keys in traces could be sensitive if `.agent-trace/` is shared
@@ -203,7 +203,7 @@ This creates an audit trail from commit → agent → conversation → decisions
 When you use `--task`, the commit is automatically linked to the task's Patchwork timeline:
 
 ```bash
-mc commit -m "fix: resolve bug" --task task-abc123
+pardner commit -m "fix: resolve bug" --task task-abc123
 # 📋 Trace recorded: abc123de
 #    Agent: @gary
 #    Task: task-abc123
@@ -211,14 +211,14 @@ mc commit -m "fix: resolve bug" --task task-abc123
 ```
 
 This means:
-- **`mc diff <task-id>`** shows commits alongside task status changes
-- **`mc trace task <task-id>`** lists all commits for a task
-- **`mc timeline`** shows commit events in the activity feed
+- **`pardner diff <task-id>`** shows commits alongside task status changes
+- **`pardner trace task <task-id>`** lists all commits for a task
+- **`pardner timeline`** shows commit events in the activity feed
 
 Full provenance chain: **commit → agent trace → task → conversation**
 
 ## Future Plans
 
-- [ ] `mc trace prune` — Clean up old traces
+- [ ] `pardner trace prune` — Clean up old traces
 - [ ] Line-level attribution (Phase 4)
 - [ ] Retroactive attribution for existing commits

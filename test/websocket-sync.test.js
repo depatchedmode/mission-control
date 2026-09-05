@@ -1,277 +1,118 @@
-#!/usr/bin/env node
-
-/**
- * Fitness Test: WebSocket Real-Time Sync
- *
- * Validates the real-time sync claim — WebSocket clients
- * receive live updates when the document changes via HTTP.
- */
-
-import { describe, it } from 'node:test'
+import { it } from 'node:test'
 import assert from 'node:assert/strict'
 import { once } from 'node:events'
-import {
-  withStartedServer,
-  authedPost,
-  authedPatch,
-  getDoc,
-  createTask,
-  connectAuthenticatedWs,
-  nextWsMessage,
-} from '../support/resources.js'
+import { setTimeout as delay } from 'node:timers/promises'
+import { WebSocket } from 'ws'
+import { withWorkspaceServer } from '../support/workspace-test.js'
 
-describe('websocket sync', () => {
-  it('client receives document-state on connect', async () => {
-    await withStartedServer({}, async server => {
-      const ws = await connectAuthenticatedWs(server)
-      try {
-        const msg = await nextWsMessage(ws)
-        assert.equal(msg.type, 'document-state')
-        assert.ok(msg.doc, 'Should include full document')
-        assert.ok(msg.doc.tasks !== undefined, 'Doc should have tasks')
-      } finally {
-        ws.close()
-        await once(ws, 'close')
-      }
-    })
-  })
-
-  it('client receives document-update after HTTP task creation', async () => {
-    await withStartedServer({}, async server => {
-      const ws = await connectAuthenticatedWs(server)
-      try {
-        // Consume initial document-state
-        await nextWsMessage(ws)
-
-        // Set up listener BEFORE the HTTP call so we don't miss the broadcast
-        const updatePromise = nextWsMessage(ws, 3000)
-
-        // Create a task via HTTP
-        const taskId = await createTask(server, { title: 'WS notify test' })
-
-        // WS client should receive the update
-        const msg = await updatePromise
-        assert.equal(msg.type, 'document-update')
-        assert.ok(msg.doc.tasks[taskId], 'Update should contain the new task')
-        assert.equal(msg.doc.tasks[taskId].title, 'WS notify test')
-      } finally {
-        ws.close()
-        await once(ws, 'close')
-      }
-    })
-  })
-
-  it('client receives document-update after HTTP task update', async () => {
-    await withStartedServer({}, async server => {
-      const taskId = await createTask(server, { title: 'Update me' })
-
-      const ws = await connectAuthenticatedWs(server)
-      try {
-        // Consume initial state
-        await nextWsMessage(ws)
-
-        const updatePromise = nextWsMessage(ws, 3000)
-
-        // Update via HTTP
-        await authedPatch(server, `/automerge/task/${taskId}`, {
-          status: 'in-progress',
-          agent: 'gary',
+async function withSubscribers(count, run) {
+  await withWorkspaceServer(async fixture => {
+    const clients = []
+    try {
+      for (let index = 0; index < count; index++) {
+        const { ticket } = await fixture.api('/automerge/ws-ticket', {})
+        const ws = new WebSocket(`ws://127.0.0.1:${fixture.server.wsPort}/?ticket=${ticket}`, {
+          origin: `http://localhost:${fixture.server.httpPort}`,
         })
-
-        const msg = await updatePromise
-        assert.equal(msg.type, 'document-update')
-        assert.equal(msg.doc.tasks[taskId].status, 'in-progress')
-      } finally {
+        const messages = []
+        ws.on('message', data => messages.push(JSON.parse(data.toString())))
+        const client = { ws, messages, async next(type) {
+          const deadline = Date.now() + 3000
+          while (true) {
+            const index = messages.findIndex(message => message.type === type)
+            if (index >= 0) return messages.splice(index, 1)[0]
+            assert.ok(Date.now() < deadline, `Missing ${type} message`)
+            await delay(10)
+          }
+        } }
+        clients.push(client)
+        await once(ws, 'open')
+        client.initial = await client.next('document-state')
+      }
+      await run({ ...fixture, clients })
+    } finally {
+      await Promise.all(clients.map(async ({ ws }) => {
+        if (ws.readyState === WebSocket.CLOSED) return
+        const closed = once(ws, 'close')
         ws.close()
-        await once(ws, 'close')
-      }
+        await closed
+      }))
+    }
+  })
+}
+
+it('a UI subscriber receives a complete initial snapshot with registered Actors', async () => {
+  await withSubscribers(1, async ({ clients }) => {
+    const { doc } = clients[0].initial
+    assert.deepEqual(doc.tasks, {})
+    assert.equal(doc.actors.builder.kind, 'agent')
+    assert.equal(doc.actors.alice.kind, 'human')
+    assert.ok(Array.isArray(doc.heads))
+  })
+})
+
+it('HTTP task creation broadcasts the new task and its attributed operation', async () => {
+  await withSubscribers(1, async ({ clients, operation }) => {
+    const receipt = await operation('task.create', { title: 'Broadcast task' }, 'builder')
+    assert.equal(receipt.savedLocally, true)
+    const { doc } = await clients[0].next('document-update')
+    assert.equal(doc.tasks[receipt.result.taskId].title, 'Broadcast task')
+    assert.equal(doc.operations[receipt.operationId].actorId, 'builder')
+  })
+})
+
+it('HTTP edits broadcast changed fields and their revision IDs', async () => {
+  await withSubscribers(1, async ({ clients, create, update }) => {
+    const taskId = await create()
+    await clients[0].next('document-update')
+    const receipt = await update(taskId, { status: 'in-progress' }, 'builder')
+    const { doc } = await clients[0].next('document-update')
+    assert.equal(doc.tasks[taskId].status, 'in-progress')
+    assert.equal(doc.operations[receipt.operationId].payload.updates.status, 'in-progress')
+  })
+})
+
+it('HTTP comments broadcast complete content and author', async () => {
+  await withSubscribers(1, async ({ clients, create, operation }) => {
+    const taskId = await create()
+    await clients[0].next('document-update')
+    const receipt = await operation('comment.add', { taskId, text: 'Complete broadcast comment' }, 'reviewer')
+    const { doc } = await clients[0].next('document-update')
+    assert.equal(doc.comments[receipt.result.commentId].content, 'Complete broadcast comment')
+    assert.equal(doc.comments[receipt.result.commentId].actorId, 'reviewer')
+  })
+})
+
+it('every connected UI subscriber receives the same document broadcast', async () => {
+  await withSubscribers(2, async ({ clients, create }) => {
+    const taskId = await create({ title: 'Shared broadcast' })
+    const messages = await Promise.all(clients.map(client => client.next('document-update')))
+    assert.equal(messages[0].doc.tasks[taskId].title, 'Shared broadcast')
+    assert.deepEqual(messages[0].doc, messages[1].doc)
+  })
+})
+
+for (const changeType of ['task-create', 'task-update', 'comment-add']) {
+  it(`rejects legacy JSON ${changeType} without changing shared state`, async () => {
+    await withSubscribers(2, async ({ clients, create, api }) => {
+      const taskId = await create()
+      await Promise.all(clients.map(client => client.next('document-update')))
+      const before = (await api('/automerge/doc')).doc
+      clients[0].ws.send(JSON.stringify({ type: 'document-change', agent: 'builder', change: {
+        type: changeType, taskId, updates: { status: 'completed' },
+        task: { id: 'injected', title: 'Injected task' }, comment: { text: 'Injected comment' },
+      } }))
+      const error = await clients[0].next('error')
+      assert.equal(error.code, 'HTTP_MUTATION_REQUIRED')
+      assert.deepEqual((await api('/automerge/doc')).doc, before)
+      assert.equal(clients[1].messages.filter(message => message.type === 'document-update').length, 0)
     })
   })
+}
 
-  it('client receives document-update after comment is added', async () => {
-    await withStartedServer({}, async server => {
-      const taskId = await createTask(server)
-
-      const ws = await connectAuthenticatedWs(server)
-      try {
-        await nextWsMessage(ws)
-
-        const updatePromise = nextWsMessage(ws, 3000)
-
-        const { commentId } = await authedPost(server, '/automerge/comment', {
-          taskId,
-          text: 'Hello via HTTP',
-          agent: 'gary',
-        })
-
-        const msg = await updatePromise
-        assert.equal(msg.type, 'document-update')
-        assert.ok(msg.doc.comments[commentId], 'Update should contain the new comment')
-      } finally {
-        ws.close()
-        await once(ws, 'close')
-      }
-    })
-  })
-
-  it('multiple WS clients each receive the same broadcast', async () => {
-    await withStartedServer({}, async server => {
-      const ws1 = await connectAuthenticatedWs(server)
-      const ws2 = await connectAuthenticatedWs(server)
-      try {
-        // Consume initial states
-        await nextWsMessage(ws1)
-        await nextWsMessage(ws2)
-
-        // Set up listeners before mutation
-        const p1 = nextWsMessage(ws1, 3000)
-        const p2 = nextWsMessage(ws2, 3000)
-
-        // Mutate via HTTP
-        await createTask(server, { title: 'Broadcast test' })
-
-        // Both clients should receive the update
-        const [msg1, msg2] = await Promise.all([p1, p2])
-
-        assert.equal(msg1.type, 'document-update')
-        assert.equal(msg2.type, 'document-update')
-
-        // Both should have the same document state
-        const tasks1 = Object.keys(msg1.doc.tasks)
-        const tasks2 = Object.keys(msg2.doc.tasks)
-        assert.deepEqual(tasks1.sort(), tasks2.sort())
-      } finally {
-        ws1.close()
-        ws2.close()
-        await Promise.all([once(ws1, 'close'), once(ws2, 'close')])
-      }
-    })
-  })
-
-  it('WS task-update message applies correctly', async () => {
-    await withStartedServer({}, async server => {
-      const taskId = await createTask(server, { title: 'WS update' })
-
-      // Use two clients: one sends, the other observes the broadcast
-      const sender = await connectAuthenticatedWs(server)
-      const observer = await connectAuthenticatedWs(server)
-      try {
-        await nextWsMessage(sender)
-        await nextWsMessage(observer)
-
-        const updatePromise = nextWsMessage(observer, 3000)
-
-        // Send task update via WebSocket
-        sender.send(JSON.stringify({
-          type: 'document-change',
-          change: {
-            type: 'task-update',
-            taskId,
-            updates: { status: 'completed' },
-          },
-          agent: 'ui-user',
-        }))
-
-        // Observer (non-sender) should receive the broadcast
-        const msg = await updatePromise
-        assert.equal(msg.type, 'document-update')
-        assert.equal(msg.doc.tasks[taskId].status, 'completed')
-      } finally {
-        sender.close()
-        observer.close()
-        await Promise.all([once(sender, 'close'), once(observer, 'close')])
-      }
-    })
-  })
-
-  it('WS task-create message creates a task', async () => {
-    await withStartedServer({}, async server => {
-      const sender = await connectAuthenticatedWs(server)
-      const observer = await connectAuthenticatedWs(server)
-      try {
-        await nextWsMessage(sender)
-        await nextWsMessage(observer)
-
-        const updatePromise = nextWsMessage(observer, 3000)
-
-        const taskId = 'ws-created-' + Date.now()
-        sender.send(JSON.stringify({
-          type: 'document-change',
-          change: {
-            type: 'task-create',
-            task: {
-              id: taskId,
-              title: 'Created via WS',
-              status: 'todo',
-              priority: 'p2',
-            },
-          },
-          agent: 'ui-user',
-        }))
-
-        const msg = await updatePromise
-        assert.equal(msg.type, 'document-update')
-        assert.ok(msg.doc.tasks[taskId], 'Task created via WS should exist')
-        assert.equal(msg.doc.tasks[taskId].title, 'Created via WS')
-      } finally {
-        sender.close()
-        observer.close()
-        await Promise.all([once(sender, 'close'), once(observer, 'close')])
-      }
-    })
-  })
-
-  it('WS comment-add message creates a comment', async () => {
-    await withStartedServer({}, async server => {
-      const taskId = await createTask(server)
-
-      const ws = await connectAuthenticatedWs(server)
-      try {
-        await nextWsMessage(ws)
-
-        ws.send(JSON.stringify({
-          type: 'document-change',
-          change: {
-            type: 'comment-add',
-            taskId,
-            comment: {
-              text: 'Comment via WS',
-              agent: 'ui-user',
-            },
-          },
-          agent: 'ui-user',
-        }))
-
-        // comment-add broadcasts to ALL clients (including sender)
-        const msg = await nextWsMessage(ws)
-        assert.equal(msg.type, 'document-update')
-
-        // Note: API accepts 'text' but stores as 'content' in the document.
-        // See automerge-store.js addComment() — this is an API naming inconsistency.
-        const comments = Object.values(msg.doc.comments).filter(c => c.taskId === taskId)
-        assert.ok(comments.length >= 1, 'Should have at least one comment')
-        assert.equal(comments[0].content, 'Comment via WS')
-      } finally {
-        ws.close()
-        await once(ws, 'close')
-      }
-    })
-  })
-
-  it('ping/pong keepalive works', async () => {
-    await withStartedServer({}, async server => {
-      const ws = await connectAuthenticatedWs(server)
-      try {
-        await nextWsMessage(ws) // consume initial state
-
-        ws.send(JSON.stringify({ type: 'ping' }))
-
-        const msg = await nextWsMessage(ws)
-        assert.equal(msg.type, 'pong')
-      } finally {
-        ws.close()
-        await once(ws, 'close')
-      }
-    })
+it('JSON ping receives a pong without a document mutation', async () => {
+  await withSubscribers(1, async ({ clients }) => {
+    clients[0].ws.send(JSON.stringify({ type: 'ping' }))
+    assert.equal((await clients[0].next('pong')).type, 'pong')
   })
 })

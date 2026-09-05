@@ -1,210 +1,122 @@
-#!/usr/bin/env node
-
-/**
- * Fitness Test: Concurrent Writes
- *
- * Validates the core multi-agent CRDT positioning claim —
- * multiple agents writing to the same document simultaneously
- * should produce a coherent, complete result.
- */
-
-import { describe, it } from 'node:test'
+import { it } from 'node:test'
 import assert from 'node:assert/strict'
-import {
-  withStartedServer,
-  authedPost,
-  authedPatch,
-  getDoc,
-  createTask,
-} from '../support/resources.js'
+import { withWorkspaceServer } from '../support/workspace-test.js'
 
-describe('concurrent writes', () => {
-  it('two agents update different fields on the same task concurrently', async () => {
-    await withStartedServer({}, async server => {
-      const taskId = await createTask(server, { title: 'Shared task' })
-
-      // Agent A sets status, Agent B sets assignee — simultaneously
-      await Promise.all([
-        authedPatch(server, `/automerge/task/${taskId}`, {
-          status: 'in-progress',
-          agent: 'agent-a',
-        }),
-        authedPatch(server, `/automerge/task/${taskId}`, {
-          assignee: 'agent-b',
-          agent: 'agent-b',
-        }),
-      ])
-
-      const doc = await getDoc(server)
-      const task = doc.tasks[taskId]
-
-      assert.equal(task.status, 'in-progress', 'Agent A status change should be preserved')
-      assert.equal(task.assignee, 'agent-b', 'Agent B assignee change should be preserved')
-    })
+it('two agents concurrently update independent fields without losing either change', async () => {
+  await withWorkspaceServer(async ({ create, context, operation }) => {
+    const taskId = await create()
+    const { revisions } = await context(taskId)
+    const receipts = await Promise.all([
+      operation('task.update', { taskId, updates: { status: 'in-progress' }, expectedRevisions: { status: revisions.status } }, 'builder'),
+      operation('task.update', { taskId, updates: { assignee: 'reviewer' }, expectedRevisions: { assignee: revisions.assignee } }, 'reviewer'),
+    ])
+    assert.ok(receipts.every(receipt => receipt.savedLocally))
+    const result = await context(taskId)
+    assert.equal(result.task.status, 'in-progress')
+    assert.equal(result.task.assignee, 'reviewer')
+    for (const receipt of receipts) assert.equal(result.history.filter(event => event.operationId === receipt.operationId).length, 1)
   })
+})
 
-  it('two agents update the same field concurrently without crashing', async () => {
-    await withStartedServer({}, async server => {
-      const taskId = await createTask(server, { title: 'Contested task' })
-
-      // Both agents set status to different values simultaneously
-      const [resultA, resultB] = await Promise.all([
-        authedPatch(server, `/automerge/task/${taskId}`, {
-          status: 'in-progress',
-          agent: 'agent-a',
-        }),
-        authedPatch(server, `/automerge/task/${taskId}`, {
-          status: 'review',
-          agent: 'agent-b',
-        }),
-      ])
-
-      // Both requests should succeed (no crashes, no 500s)
-      assert.ok(resultA.success, 'Agent A request should succeed')
-      assert.ok(resultB.success, 'Agent B request should succeed')
-
-      // Document should converge to a deterministic state
-      const doc = await getDoc(server)
-      const task = doc.tasks[taskId]
-      assert.ok(
-        task.status === 'in-progress' || task.status === 'review',
-        `Status should be one of the two values, got: ${task.status}`
-      )
-    })
+it('concurrent writes to one local field acknowledge one winner and explicitly reject the stale write', async () => {
+  await withWorkspaceServer(async ({ create, context, operation }) => {
+    const taskId = await create()
+    const { revisions } = await context(taskId)
+    const receipts = await Promise.all(['in-progress', 'review'].map((status, index) =>
+      operation('task.update', { taskId, updates: { status }, expectedRevisions: { status: revisions.status } }, index ? 'reviewer' : 'builder')))
+    const accepted = receipts.filter(receipt => receipt.httpStatus === 200)
+    const rejected = receipts.filter(receipt => receipt.code === 'STALE_UPDATE')
+    assert.equal(accepted.length, 1)
+    assert.equal(rejected.length, 1)
+    const result = await context(taskId)
+    assert.equal(result.history.length, 2)
+    assert.deepEqual(result.revisions.status, [accepted[0].operationId])
+    assert.equal(result.task.status, result.history.find(event => event.operationId === accepted[0].operationId).payload.updates.status)
   })
+})
 
-  it('two agents add comments to the same task concurrently', async () => {
-    await withStartedServer({}, async server => {
-      const taskId = await createTask(server, { title: 'Discussed task' })
-
-      await Promise.all([
-        authedPost(server, '/automerge/comment', {
-          taskId,
-          text: 'Comment from agent A',
-          agent: 'agent-a',
-        }),
-        authedPost(server, '/automerge/comment', {
-          taskId,
-          text: 'Comment from agent B',
-          agent: 'agent-b',
-        }),
-      ])
-
-      const doc = await getDoc(server)
-      const comments = Object.values(doc.comments).filter(c => c.taskId === taskId)
-
-      assert.equal(comments.length, 2, 'Both comments should be present')
-
-      const agents = comments.map(c => c.agent).sort()
-      assert.deepEqual(agents, ['agent-a', 'agent-b'])
-    })
+it('concurrent comments preserve both authors, content, and operation history', async () => {
+  await withWorkspaceServer(async ({ create, operation, context }) => {
+    const taskId = await create()
+    const actors = ['builder', 'reviewer']
+    const receipts = await Promise.all(actors.map(actor => operation('comment.add', { taskId, text: `From ${actor}` }, actor)))
+    assert.ok(receipts.every(receipt => receipt.savedLocally))
+    const result = await context(taskId)
+    assert.equal(result.comments.length, 2)
+    for (const actor of actors) {
+      const comment = result.comments.find(comment => comment.actorId === actor)
+      assert.equal(comment.content, `From ${actor}`)
+    }
+    assert.equal(result.history.filter(event => event.type === 'comment.add').length, 2)
   })
+})
 
-  it('rapid sequential updates from multiple agents are all reflected', async () => {
-    await withStartedServer({}, async server => {
-      const taskId = await createTask(server, { title: 'Rapid fire task' })
-
-      // 10 status updates in quick succession from alternating agents
-      const updates = Array.from({ length: 10 }, (_, i) => {
-        const agent = i % 2 === 0 ? 'agent-a' : 'agent-b'
-        const priority = `p${i % 4}`
-        return authedPatch(server, `/automerge/task/${taskId}`, {
-          priority,
-          agent,
-        })
-      })
-
-      const results = await Promise.all(updates)
-
-      // All requests should succeed
-      for (const result of results) {
-        assert.ok(result.success, 'Each update should succeed')
-      }
-
-      // Document should be in a valid state
-      const doc = await getDoc(server)
-      const task = doc.tasks[taskId]
-      assert.ok(task, 'Task should still exist')
-      assert.match(task.priority, /^p[0-3]$/, 'Priority should be valid')
-    })
+it('sequential alternating-agent updates retain every acknowledged revision and its exact value', async () => {
+  await withWorkspaceServer(async ({ create, update, context }) => {
+    const taskId = await create()
+    const expected = []
+    for (let index = 0; index < 10; index++) {
+      const priority = `p${index % 4}`, actor = index % 2 ? 'reviewer' : 'builder'
+      const receipt = await update(taskId, { priority }, actor)
+      assert.equal(receipt.savedLocally, true)
+      expected.push({ id: receipt.operationId, priority, actor })
+    }
+    const result = await context(taskId)
+    assert.equal(result.history.length, 11)
+    assert.equal(result.task.priority, expected.at(-1).priority)
+    for (const item of expected) {
+      const event = result.history.find(event => event.operationId === item.id)
+      assert.equal(event.actorId, item.actor)
+      assert.equal(event.payload.updates.priority, item.priority)
+    }
   })
+})
 
-  it('concurrent task creation produces distinct tasks', async () => {
-    await withStartedServer({}, async server => {
-      const results = await Promise.all([
-        authedPost(server, '/automerge/task', {
-          title: 'Task from agent A',
-          agent: 'agent-a',
-        }),
-        authedPost(server, '/automerge/task', {
-          title: 'Task from agent B',
-          agent: 'agent-b',
-        }),
-      ])
-
-      assert.ok(results[0].success)
-      assert.ok(results[1].success)
-      assert.notEqual(results[0].taskId, results[1].taskId, 'Task IDs should be distinct')
-
-      const doc = await getDoc(server)
-      assert.ok(doc.tasks[results[0].taskId], 'Agent A task should exist')
-      assert.ok(doc.tasks[results[1].taskId], 'Agent B task should exist')
-    })
+it('concurrent task creation produces distinct attributed tasks', async () => {
+  await withWorkspaceServer(async ({ operation, context }) => {
+    const actors = ['builder', 'reviewer']
+    const receipts = await Promise.all(actors.map(actor => operation('task.create', { title: `Task from ${actor}` }, actor)))
+    assert.ok(receipts.every(receipt => receipt.savedLocally))
+    assert.notEqual(receipts[0].result.taskId, receipts[1].result.taskId)
+    for (let index = 0; index < receipts.length; index++) {
+      const result = await context(receipts[index].result.taskId)
+      assert.equal(result.task.title, `Task from ${actors[index]}`)
+      assert.equal(result.task.created_by, actors[index])
+    }
   })
+})
 
-  it('activity feed contains entries from all concurrent operations', async () => {
-    await withStartedServer({}, async server => {
-      const taskId = await createTask(server, { title: 'Activity test' })
-
-      await Promise.all([
-        authedPatch(server, `/automerge/task/${taskId}`, {
-          status: 'in-progress',
-          agent: 'agent-a',
-        }),
-        authedPost(server, '/automerge/comment', {
-          taskId,
-          text: 'Concurrent comment',
-          agent: 'agent-b',
-        }),
-      ])
-
-      const doc = await getDoc(server)
-      const taskActivity = doc.activity.filter(a => a.taskId === taskId)
-
-      // Should have: task_created + task_updated + comment_added = at least 3
-      assert.ok(
-        taskActivity.length >= 3,
-        `Expected at least 3 activity entries, got ${taskActivity.length}`
-      )
-
-      const types = taskActivity.map(a => a.type)
-      assert.ok(types.includes('task_created'), 'Should have task_created')
-      assert.ok(types.includes('task_updated'), 'Should have task_updated')
-      assert.ok(types.includes('comment_added'), 'Should have comment_added')
-    })
+it('mixed concurrent operations each appear once in the shared activity record', async () => {
+  await withWorkspaceServer(async ({ create, update, operation, context, server }) => {
+    const taskId = await create()
+    const receipts = await Promise.all([
+      update(taskId, { status: 'in-progress' }, 'builder'),
+      operation('comment.add', { taskId, text: 'Concurrent comment' }, 'reviewer'),
+    ])
+    assert.ok(receipts.every(receipt => receipt.savedLocally))
+    const result = await context(taskId)
+    assert.deepEqual(result.history.map(event => event.type).sort(), ['comment.add', 'task.create', 'task.update'])
+    const activity = Object.values(server.store.workspace.handle.doc().operations).filter(event => event.taskId === taskId)
+    assert.deepEqual(activity.map(event => event.operationId).sort(), result.history.map(event => event.operationId).sort())
   })
+})
 
-  it('high-volume concurrent comments from many agents', async () => {
-    await withStartedServer({}, async server => {
-      const taskId = await createTask(server, { title: 'High volume task' })
-
-      // 5 agents each post a comment concurrently
-      const commentPromises = Array.from({ length: 5 }, (_, i) =>
-        authedPost(server, '/automerge/comment', {
-          taskId,
-          text: `Message from agent-${i}`,
-          agent: `agent-${i}`,
-        })
-      )
-
-      const results = await Promise.all(commentPromises)
-      for (const result of results) {
-        assert.ok(result.success, 'Each comment should succeed')
-      }
-
-      const doc = await getDoc(server)
-      const comments = Object.values(doc.comments).filter(c => c.taskId === taskId)
-      assert.equal(comments.length, 5, 'All 5 comments should be present')
-    })
+it('a burst from five registered agents preserves all fifty comments and their provenance', async () => {
+  await withWorkspaceServer(async ({ create, operation, context }) => {
+    const taskId = await create()
+    for (let index = 0; index < 5; index++) {
+      assert.equal((await operation('actor.register', { id: `agent-${index}`, handle: `agent-${index}`, kind: 'agent' })).savedLocally, true)
+    }
+    const receipts = await Promise.all(Array.from({ length: 50 }, (_, index) =>
+      operation('comment.add', { taskId, text: `Message ${index}` }, `agent-${index % 5}`)))
+    assert.ok(receipts.every(receipt => receipt.savedLocally))
+    const result = await context(taskId)
+    assert.equal(result.comments.length, 50)
+    assert.equal(result.history.length, 51)
+    for (let index = 0; index < receipts.length; index++) {
+      const comment = result.comments.find(comment => comment.id === receipts[index].result.commentId)
+      assert.equal(comment.content, `Message ${index}`)
+      assert.equal(comment.actorId, `agent-${index % 5}`)
+    }
   })
 })

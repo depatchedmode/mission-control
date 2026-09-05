@@ -9,6 +9,7 @@ import { WebSocketClientAdapter } from '@automerge/automerge-repo-network-websoc
 
 import AutomergeSyncServer from '../automerge-sync-server.js'
 import { NodeFSStorageAdapter } from '../lib/nodefs-storage-adapter.js'
+import { randomUUID } from 'node:crypto'
 
 export const noopLogger = {
   log() {},
@@ -16,7 +17,7 @@ export const noopLogger = {
   error() {},
 }
 
-export function createTempDir(prefix = 'mc-test-') {
+export function createTempDir(prefix = 'pardner-test-') {
   return mkdtempSync(join(tmpdir(), prefix))
 }
 
@@ -34,6 +35,7 @@ export const POLL_INTERVAL_MS = 25
 
 export function createServer(storagePath, overrides = {}) {
   return new AutomergeSyncServer({
+    actors: [{ id: 'alice', handle: 'alice', kind: 'human' }, { id: 'builder', handle: 'builder', kind: 'agent' }],
     env: {},
     apiToken: TEST_TOKEN,
     allowedOrigins: ['http://allowed.example'],
@@ -47,7 +49,7 @@ export function createServer(storagePath, overrides = {}) {
 }
 
 export async function withStartedServer(overrides, fn) {
-  const storagePath = createTempDir('mc-fitness-')
+  const storagePath = createTempDir('pardner-fitness-')
   const server = createServer(storagePath, overrides)
   try {
     await server.start()
@@ -141,12 +143,12 @@ export async function getDoc(server) {
 
 // Create a task via the API and return its ID
 export async function createTask(server, fields = {}) {
-  const { taskId } = await authedPost(server, '/automerge/task', {
-    title: fields.title || 'Test task',
-    agent: fields.agent || 'test-agent',
-    ...fields,
+  const response = await authedPost(server, '/automerge/operations', {
+    operationId: randomUUID(), actorId: 'alice', type: 'task.create',
+    payload: { title: 'Test task', ...fields },
   })
-  return taskId
+  if (!response.savedLocally) throw new Error(JSON.stringify(response))
+  return response.result.taskId
 }
 
 // ─── WebSocket Helpers ───
@@ -213,7 +215,7 @@ export function nativeAutomergeWsUrl(server, query = {}) {
   return wsUrl(server, `${NATIVE_AUTOMERGE_WS_PATH}${suffix}`)
 }
 
-export async function openNativePeer(server, storagePath = createTempDir('mc-peer-')) {
+export async function openNativePeer(server, storagePath = createTempDir('pardner-peer-')) {
   const ticket = await mintWsTicket(server)
   const { url: documentUrl } = await authedGet(server, '/automerge/url')
   const adapter = new WebSocketClientAdapter(
