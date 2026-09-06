@@ -597,7 +597,7 @@ function TaskDetail({
   const [handoffStatus, setHandoffStatus] = useState('review')
   const [handoffMessage, setHandoffMessage] = useState('')
   const [failure, setFailure] = useState(null)
-  const handoffBase = useRef(null)
+  const [handoffBase, setHandoffBase] = useState(null)
   useEffect(() => {
     if (confirmedOperation?.payload.taskId !== taskId) return
     if (confirmedOperation.type === 'comment.add') {
@@ -605,7 +605,7 @@ function TaskDetail({
     }
     if (confirmedOperation.type === 'task.handoff') {
       setHandoffMessage(current => current === confirmedOperation.payload.message ? '' : current)
-      handoffBase.current = null
+      setHandoffBase(null)
     }
   }, [confirmedOperation, taskId])
   useEffect(() => {
@@ -643,6 +643,8 @@ function TaskDetail({
     )
   const { task, comments, history, conflicts, revisions } = context
   const canWrite = Boolean(actor) && !busy
+  const handoffRevisions = { assignee: revisions.assignee, status: revisions.status }
+  const handoffStale = handoffBase && JSON.stringify(handoffBase) !== JSON.stringify(handoffRevisions)
   return (
     <aside className="side-panel" aria-label="Task details">
       <div className="panel-heading">
@@ -745,10 +747,7 @@ function TaskDetail({
         <h3>Hand off work</h3>
         <form
           onFocusCapture={() => {
-            handoffBase.current ??= {
-              assignee: revisions.assignee,
-              status: revisions.status,
-            }
+            setHandoffBase(current => current ?? handoffRevisions)
           }}
           onSubmit={async (event) => {
             event.preventDefault()
@@ -757,14 +756,23 @@ function TaskDetail({
               to,
               status: handoffStatus,
               message: handoffMessage,
-              expectedRevisions: handoffBase.current,
+              expectedRevisions: handoffBase,
             })
             if (receipt) {
               setHandoffMessage(current => current === handoffMessage ? '' : current)
-              handoffBase.current = null
+              setHandoffBase(null)
             }
           }}
         >
+          {handoffStale && (
+            <div className="notice" role="status">
+              <p>Assignment or status changed while you were preparing this handoff. Your draft is preserved.</p>
+              <p>Current task: {labelActor(actors[task.assignee])} · {LABELS[task.status]}.</p>
+              <button type="button" disabled={!canWrite} onClick={() => setHandoffBase(handoffRevisions)}>
+                Use latest task details
+              </button>
+            </div>
+          )}
           <SelectActor
             label="Recipient"
             actors={actors}
@@ -787,12 +795,13 @@ function TaskDetail({
           <label>
             Handoff message
             <textarea
+              aria-label="Handoff message"
               required
               value={handoffMessage}
               onChange={(event) => setHandoffMessage(event.target.value)}
             />
           </label>
-          <button disabled={!canWrite || !to}>Hand off</button>
+          <button disabled={!canWrite || !to || handoffStale}>Hand off</button>
         </form>
       </section>
       <section>

@@ -129,17 +129,17 @@ for (const uuidAvailable of [true, false]) it(
       await alice
         .getByRole('button', { name: 'Cancel edit', exact: true })
         .click()
+      await alice.getByLabel('Recipient', { exact: true }).selectOption('builder')
+      await alice.getByLabel('Handoff message', { exact: true }).fill('Please implement and record the evidence.')
       await alice.getByRole('button', { name: 'Edit task', exact: true }).click()
       await alice.getByLabel('Status', { exact: true }).selectOption('in-progress')
       await alice.getByRole('button', { name: 'Save changes', exact: true }).click()
       await alice.getByRole('button', { name: 'Edit task', exact: true }).waitFor()
       assert.equal((await run(['show', taskId])).task.status, 'in-progress')
-      await alice
-        .getByLabel('Recipient', { exact: true })
-        .selectOption('builder')
-      await alice
-        .getByLabel('Handoff message', { exact: true })
-        .fill('Please implement and record the evidence.')
+      await alice.getByRole('button', { name: 'Use latest task details', exact: true }).waitFor()
+      assert.equal(await alice.getByRole('button', { name: 'Hand off', exact: true }).isDisabled(), true)
+      assert.equal(await alice.getByLabel('Handoff message', { exact: true }).inputValue(), 'Please implement and record the evidence.')
+      await alice.getByRole('button', { name: 'Use latest task details', exact: true }).click()
       await alice.getByRole('button', { name: 'Hand off', exact: true }).click()
       await bob
         .getByText('Please implement and record the evidence.', { exact: true })
