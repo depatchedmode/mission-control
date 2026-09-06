@@ -100,6 +100,9 @@ export default function Pardner() {
     }
   })
   const inflight = useRef(false)
+  const docUpdates = useRef(0)
+  const statusUpdates = useRef(0)
+  const refreshGeneration = useRef(0)
   useEffect(() => {
     fetch('/pardner/config')
       .then((response) => {
@@ -133,12 +136,16 @@ export default function Pardner() {
     [config, token],
   )
   const refresh = useCallback(async () => {
+    const generation = ++refreshGeneration.current
+    const observedDoc = docUpdates.current
+    const observedStatus = statusUpdates.current
     const [{ doc: next }, state] = await Promise.all([
       request('/automerge/doc'),
       request('/automerge/status'),
     ])
-    setDoc(next)
-    setStatus(state)
+    if (generation !== refreshGeneration.current) return
+    if (observedDoc === docUpdates.current) setDoc(next)
+    if (observedStatus === statusUpdates.current) setStatus(state)
   }, [request])
   useEffect(() => {
     if (!token || !config) return
@@ -148,6 +155,7 @@ export default function Pardner() {
     const connect = async () => {
       try {
         await refresh()
+        if (stopped) return
         const { ticket } = await request('/automerge/ws-ticket', {})
         if (stopped) return
         const url = new URL(location.href)
@@ -161,9 +169,16 @@ export default function Pardner() {
           sessionStorage.setItem(TOKEN_KEY, token)
         }
         socket.onmessage = (event) => {
+          if (stopped) return
           const message = JSON.parse(event.data)
-          if (message.doc) setDoc(message.doc)
-          if (message.status) setStatus(message.status)
+          if (message.doc) {
+            docUpdates.current++
+            setDoc(message.doc)
+          }
+          if (message.status) {
+            statusUpdates.current++
+            setStatus(message.status)
+          }
         }
         socket.onclose = () => {
           setConnected(false)
@@ -184,6 +199,7 @@ export default function Pardner() {
     void connect()
     return () => {
       stopped = true
+      refreshGeneration.current++
       clearTimeout(timer)
       socket?.close()
     }

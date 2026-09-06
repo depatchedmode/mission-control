@@ -183,6 +183,32 @@ for (const uuidAvailable of [true, false]) it(
       assert.equal((await run(['show', taskId])).comments.find(comment => comment.content === 'New request after correcting the Actor').actorId, 'bob')
       await alice.getByLabel('Actor', { exact: true }).selectOption('alice')
 
+      let releaseSnapshot, captureSnapshot
+      const released = new Promise(resolve => { releaseSnapshot = resolve })
+      const captured = new Promise(resolve => { captureSnapshot = resolve })
+      await alice.route('**/automerge/doc', async route => {
+        const response = await route.fetch()
+        captureSnapshot(await response.json())
+        await released
+        await route.fulfill({ response })
+      })
+      try {
+        await alice.getByLabel('Comment', { exact: true }).fill('Save while another Actor creates work')
+        await alice.getByRole('button', { name: 'Add comment', exact: true }).click()
+        const oldSnapshot = await captured
+        const created = await run(['task', 'create', '--title', 'Arrived during an HTTP refresh'], 'builder')
+        const newCard = alice.getByRole('button', { name: /Arrived during an HTTP refresh/ })
+        await newCard.waitFor()
+        assert.equal(oldSnapshot.doc.tasks[created.result.taskId], undefined)
+        releaseSnapshot()
+        // This action waits for refresh() to finish and the write controls to unlock.
+        await alice.getByRole('button', { name: 'Edit task', exact: true }).click()
+        assert.equal(await newCard.isVisible(), true, 'an older HTTP response must not replace the WebSocket update')
+        await alice.getByRole('button', { name: 'Cancel edit', exact: true }).click()
+      } finally {
+        releaseSnapshot()
+        await alice.unroute('**/automerge/doc')
+      }
       const output = resolve('output/playwright')
       await mkdir(output, { recursive: true })
       await alice.getByRole('button', { name: 'Close', exact: true }).click()
