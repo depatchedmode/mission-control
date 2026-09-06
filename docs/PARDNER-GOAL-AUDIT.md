@@ -2,6 +2,9 @@
 
 Status: **complete for the agreed automated milestone**. The uninterrupted 20-seed gate, isolated fresh-checkout verification, artifact/timing audit, and candidate fingerprint checks passed. The two-machine/two-real-agent rehearsal is prepared and remains a separate human signoff exercise.
 
+The milestone table and original evidence below describe the **schema 2** candidate.
+The schema 3 review fixes have separate qualification at the end of this audit.
+
 | Requirement | Implementation and direct evidence | Final gate |
 | --- | --- | --- |
 | Two humans and two agents coordinate as registered Actors; Actor identity differs from replica identity | `workspace-schema.js`, `workspace-commands.js`; CLI handoff workflow; UC2 same Actor on two replicas; acceptance uses Alice, Bob, Builder, Reviewer | 20 seeds passed |
@@ -46,3 +49,30 @@ Delivery leases govern message delivery, not exclusive task execution. Arbitrary
 | Agent-effect acknowledgement | 211 ms | 2,000 ms |
 
 At completion of this audit, no changes had been committed or pushed to the user’s repository. The temporary Git repository used for fresh-checkout verification contains only an isolated candidate snapshot.
+
+## Schema 3 review-fix qualification — 2026-09-06
+
+`npm run verify` passed the built UI, all **176 regression tests**, and one complete
+seed-1 acceptance scenario. The fixture still includes 100 tasks, 400 comments,
+200 scripted operations, persisted replicas, partitions, and process restarts.
+
+The added regressions cover concurrent task/comment/branch creation retries,
+late changes and explicit conflict resolution, Actor namespace collisions,
+stalled WebSocket handshake recovery, stale browser snapshots and handoff drafts,
+and preservation/rejection of version 2 storage. Further regressions cover branch
+retries against divergent parent bases, preservation of those bases through
+conflict resolution, linear task/comment revision storage, and late replays of
+intermediate edits. Public operation history keeps its existing field-change format.
+
+Superseded field revisions are recorded once in a shared map. Branch revisions
+reference immutable base snapshots, keeping merge comparisons tied to the bases
+that produced the revisions rather than the winning task metadata.
+
+- Acceptance artifacts: `output/acceptance/2026-09-06T04-17-29.376Z/`.
+- Source, test, dependency-lock, and UI-build fingerprint: `940181b05f70548e4b5f972b58fee7ba6824223637664bd5ff93ada1f847eae0`.
+- Schema 3 requires fresh workspace directories; incompatible prior data is preserved.
+- The earlier 20-seed gate, isolated fresh-checkout qualification, and VM/real-agent rehearsals were **not rerun for schema 3**.
+
+The qualification above includes the final readability cleanup of revision
+filtering and branch-merge comparisons. The source fingerprint was checked
+against the complete candidate before opening the follow-up PR.

@@ -4,10 +4,11 @@ import { randomUUID } from 'node:crypto'
 import fs, { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { save } from '@automerge/automerge'
+import { getLastLocalChange, save } from '@automerge/automerge'
 import { DurableRepo } from '../lib/durable-repo.js'
 import { NodeFSStorageAdapter } from '../lib/nodefs-storage-adapter.js'
 import { Workspace, createWorkspaceData } from '../lib/workspace.js'
+import { resolveActor } from '../lib/workspace-schema.js'
 
 const actors = [
   { id: 'alice', handle: 'alice', kind: 'human' },
@@ -48,6 +49,211 @@ function updatePayload(workspace, taskId, updates) {
 }
 
 describe('shared workspace operations', () => {
+  it('preserves edits and resolves conflicts across concurrent creation retries and late copies', async () => {
+    await withWorkspaces(async (left, create) => {
+      const right = await create(left)
+      const late = await create(left)
+      const receipts = await Promise.all([left, right, late].map(workspace =>
+        command(workspace, 'task.create', { title: 'One logical task' }, 'alice', 'shared-create')))
+      const taskId = receipts[0].result.taskId
+      assert.ok(receipts.every(receipt => receipt.savedLocally && receipt.result.taskId === taskId))
+      await command(left, 'task.update', updatePayload(left, taskId, { description: 'Left description', status: 'review' }), 'alice', 'edit-a')
+      await command(right, 'task.update', updatePayload(right, taskId, { priority: 'p0', status: 'completed' }), 'bob', 'edit_a')
+      left.handle.merge(right.handle)
+      right.handle.merge(left.handle)
+      const context = left.taskContext(taskId)
+      assert.equal(context.task.description, 'Left description')
+      assert.equal(context.task.priority, 'p0')
+      assert.deepEqual(Object.keys(context.conflicts), ['status'])
+      assert.deepEqual(context.revisions.status, ['edit-a', 'edit_a'])
+      await command(left, 'task.resolve', { taskId, field: 'status', value: 'review', expectedRevisions: context.revisions.status }, 'alice', 'resolved')
+      await command(left, 'task.update', updatePayload(left, taskId, { status: 'in-progress' }), 'alice', 'after-resolution')
+      right.handle.merge(left.handle)
+      const reopened = await create(right)
+      assert.deepEqual(reopened.taskContext(taskId).conflicts, {})
+      assert.equal(reopened.taskContext(taskId).task.status, 'in-progress')
+      reopened.handle.merge(late.handle)
+      assert.deepEqual(reopened.taskContext(taskId).conflicts, {}, 'a late creation retry cannot resurrect initial values')
+      await command(late, 'task.update', updatePayload(late, taskId, { status: 'up-next' }), 'builder', 'late-edit')
+      reopened.handle.merge(late.handle)
+      assert.deepEqual(reopened.taskContext(taskId).revisions.status, ['after-resolution', 'late-edit'])
+      assert.equal(reopened.taskContext(taskId).history.filter(event => event.operationId === 'shared-create').length, 1)
+      assert.equal((await command(reopened, 'task.create', { title: 'One logical task' }, 'alice', 'shared-create')).replayed, true)
+    })
+  })
+
+  it('preserves comment edits, mentions, resolution and deletion across creation retries', async () => {
+    await withWorkspaces(async (left, create) => {
+      const taskId = await createTask(left)
+      const right = await create(left)
+      const [receipt] = await Promise.all([left, right].map(workspace =>
+        command(workspace, 'comment.add', { taskId, text: '@builder original' }, 'alice', 'shared-comment')))
+      const commentId = receipt.result.commentId
+      await command(left, 'comment.edit', { commentId, text: '@bob left edit', expectedRevisions: ['shared-comment'] }, 'alice', 'edit-a')
+      left.handle.merge(right.handle)
+      assert.equal(left.taskContext(taskId).comments[0].content, '@bob left edit')
+      assert.deepEqual(left.taskContext(taskId).mentions.map(mention => mention.toActorId), ['bob'])
+      await command(right, 'comment.edit', { commentId, text: '@reviewer right edit', expectedRevisions: ['shared-comment'] }, 'bob', 'edit_a')
+      left.handle.merge(right.handle)
+      const revisions = left.taskContext(taskId).comments[0].revisionIds
+      assert.deepEqual(revisions, ['edit-a', 'edit_a'])
+      await command(left, 'comment.resolve', { commentId, text: 'Agreed', expectedRevisions: [...revisions].reverse() }, 'alice', 'comment-resolution')
+      right.handle.merge(left.handle)
+      assert.deepEqual(right.taskContext(taskId).comments[0].conflicts, [])
+      assert.equal(right.taskContext(taskId).comments[0].content, 'Agreed')
+      await command(right, 'comment.delete', { commentId, expectedRevisions: ['comment-resolution'] })
+      left.handle.merge(right.handle)
+      assert.equal(left.taskContext(taskId).comments.length, 0)
+      assert.equal(left.taskContext(taskId).mentions.length, 0)
+    })
+  })
+
+  it('merges a concurrently retried branch without losing edits or resurrecting it', async () => {
+    await withWorkspaces(async (left, create) => {
+      const taskId = await createTask(left)
+      const right = await create(left)
+      const late = await create(left)
+      const payload = { taskId, name: 'One experiment' }
+      const [receipt] = await Promise.all([left, right].map(workspace => command(workspace, 'task.branch', payload, 'alice', 'same-branch')))
+      const branchId = receipt.result.branchId
+      await command(left, 'task.update', updatePayload(left, branchId, { description: 'Experiment results' }))
+      await command(right, 'task.update', updatePayload(right, branchId, { priority: 'p0' }))
+      left.handle.merge(right.handle)
+      await command(left, 'task.merge', { branchId, expectedRevisions: left.taskContext(taskId).revisions })
+      await command(late, 'task.branch', payload, 'alice', 'same-branch')
+      left.handle.merge(late.handle)
+      right.handle.merge(left.handle)
+      for (const workspace of [left, right]) {
+        assert.equal(workspace.taskContext(taskId).task.description, 'Experiment results')
+        assert.equal(workspace.taskContext(taskId).task.priority, 'p0')
+        assert.equal(workspace.taskContext(branchId).task.merged, true)
+        assert.equal(workspace.taskContext(branchId).task.status, 'completed')
+        assert.deepEqual(workspace.taskContext(branchId).conflicts, {})
+      }
+    })
+  })
+
+  it('does not invent branch edits when creation is retried against a different parent base', async () => {
+    await withWorkspaces(async (left, create) => {
+      const taskId = await createTask(left)
+      const right = await create(left)
+      // Different local histories make the metadata and field CRDT winners differ.
+      await command(left, 'comment.add', { taskId, text: 'F'.repeat(501) }, 'alice', 'filler')
+      await command(right, 'task.update', updatePayload(right, taskId, { description: 'B'.repeat(300) }), 'alice', 'parent-edit')
+      const payload = { taskId, name: 'Retried experiment' }
+      const [receipt] = await Promise.all([left, right].map(workspace => command(workspace, 'task.branch', payload, 'alice', 'branch-create')))
+      const branchId = receipt.result.branchId
+      await command(right, 'task.update', updatePayload(right, taskId, { description: '' }), 'alice', 'parent-clear')
+      left.handle.merge(right.handle)
+      assert.deepEqual(left.taskContext(branchId).conflicts, {})
+      await command(left, 'task.merge', { branchId, expectedRevisions: left.taskContext(taskId).revisions })
+      const reopened = await create(left)
+      assert.equal(reopened.taskContext(taskId).task.description, '')
+      assert.equal(reopened.taskContext(branchId).task.merged, true)
+    })
+  })
+
+  it('retains every contributing branch base through edits and conflict resolution', async () => {
+    await withWorkspaces(async (left, create) => {
+      const taskId = await createTask(left)
+      const right = await create(left)
+      await command(right, 'task.update', updatePayload(right, taskId, { description: 'Different parent base' }))
+      const payload = { taskId, name: 'Divergent experiment' }
+      const [receipt] = await Promise.all([left, right].map(workspace => command(workspace, 'task.branch', payload, 'alice', 'branch-create')))
+      const branchId = receipt.result.branchId
+      await command(left, 'task.update', updatePayload(left, branchId, { description: 'Left proposal' }))
+      await command(right, 'task.update', updatePayload(right, branchId, { description: 'Right proposal' }))
+      left.handle.merge(right.handle)
+      await command(left, 'task.resolve', { taskId: branchId, field: 'description', value: 'Agreed proposal',
+        expectedRevisions: left.taskContext(branchId).revisions.description })
+      const reopened = await create(left)
+      await assert.rejects(command(reopened, 'task.merge', { branchId, expectedRevisions: reopened.taskContext(taskId).revisions }), { code: 'BRANCH_CONFLICT' })
+      assert.equal(reopened.taskContext(taskId).task.description, 'Different parent base')
+      await command(reopened, 'task.update', updatePayload(reopened, taskId, { description: 'Agreed proposal' }))
+      await command(reopened, 'task.merge', { branchId, expectedRevisions: reopened.taskContext(taskId).revisions })
+      assert.equal(reopened.taskContext(taskId).task.description, 'Agreed proposal')
+    })
+  })
+
+  it('keeps repeated task and comment revision storage linear', async () => {
+    await withWorkspaces(async (workspace, create) => {
+      const taskId = await createTask(workspace)
+      const added = await command(workspace, 'comment.add', { taskId, text: 'Original' })
+      const commentId = added.result.commentId
+      const late = await create(workspace)
+      const samples = []
+      for (let index = 1; index <= 256; index++) {
+        await command(workspace, 'task.update', updatePayload(workspace, taskId, { description: `Edit ${index}` }))
+        const taskBytes = getLastLocalChange(workspace.handle.doc()).length
+        const [comment] = workspace.taskContext(taskId).comments
+        await command(workspace, 'comment.edit', { commentId, text: `Edit ${index}`, expectedRevisions: comment.revisionIds })
+        if (index === 128 || index === 256) samples.push({ taskBytes,
+          commentBytes: getLastLocalChange(workspace.handle.doc()).length, savedBytes: save(workspace.handle.doc()).length })
+      }
+      assert.ok(samples[1].taskBytes < samples[0].taskBytes * 1.25, 'task edit size must not grow with its revision history')
+      assert.ok(samples[1].commentBytes < samples[0].commentBytes * 1.25, 'comment edit size must not grow with its revision history')
+      assert.ok(samples[1].savedBytes < samples[0].savedBytes * 2.5, 'doubling edits must not produce quadratic document growth')
+      const reopened = await create(workspace)
+      await command(late, 'task.update', updatePayload(late, taskId, { description: 'Late task edit' }))
+      await command(late, 'comment.edit', { commentId, text: 'Late comment edit', expectedRevisions: [added.operationId] })
+      reopened.handle.merge(late.handle)
+      const context = reopened.taskContext(taskId)
+      assert.deepEqual(context.conflicts.description.map(choice => choice.value).sort(), ['Edit 256', 'Late task edit'])
+      assert.deepEqual(context.comments[0].conflicts.map(choice => choice.value).sort(), ['Edit 256', 'Late comment edit'])
+    })
+  })
+
+  it('does not resurrect intermediate task or comment revisions when they are replayed late', async () => {
+    await withWorkspaces(async (left, create) => {
+      const taskId = await createTask(left)
+      const added = await command(left, 'comment.add', { taskId, text: 'Original' })
+      const commentId = added.result.commentId
+      const right = await create(left)
+      const requests = [
+        { operationId: 'retried-task-edit', actorId: 'alice', type: 'task.update', payload: updatePayload(left, taskId, { description: 'Intermediate' }) },
+        { operationId: 'retried-comment-edit', actorId: 'alice', type: 'comment.edit', payload: { commentId, text: 'Intermediate', expectedRevisions: [added.operationId] } },
+      ]
+      for (const request of requests) await left.execute(request)
+      await command(left, 'task.update', updatePayload(left, taskId, { description: 'Latest' }))
+      await command(left, 'comment.edit', { commentId, text: 'Latest', expectedRevisions: ['retried-comment-edit'] })
+      for (const request of requests) assert.equal((await right.execute(request)).replayed, false)
+      left.handle.merge(right.handle)
+      const reopened = await create(left)
+      const context = reopened.taskContext(taskId)
+      assert.equal(context.task.description, 'Latest')
+      assert.deepEqual(context.conflicts, {})
+      assert.equal(context.comments[0].content, 'Latest')
+      assert.deepEqual(context.comments[0].conflicts, [])
+    })
+  })
+
+  it('rejects Actor ID and handle collisions during registration and bootstrap', async () => {
+    await withWorkspaces(async workspace => {
+      await command(workspace, 'actor.register', { id: 'actor-carol', handle: 'carol', kind: 'human' })
+      for (const payload of [
+        { id: 'carol', handle: 'other', kind: 'agent' },
+        { id: 'CAROL', handle: 'other', kind: 'agent' },
+        { id: 'other', handle: 'actor-carol', kind: 'agent' },
+      ]) {
+        await assert.rejects(command(workspace, 'actor.register', payload), { code: 'ALREADY_EXISTS' })
+        assert.throws(() => createWorkspaceData({ actors: [{ id: 'actor-carol', handle: 'carol', kind: 'human' }, payload] }), { code: 'ALREADY_EXISTS' })
+      }
+      assert.equal(resolveActor(workspace.handle.doc(), 'carol').id, 'actor-carol')
+    })
+  })
+
+  it('rejects ambiguous handles after independently registered Actors merge', async () => {
+    await withWorkspaces(async (left, create) => {
+      const right = await create(left)
+      await command(left, 'actor.register', { id: 'actor-carol', handle: 'carol', kind: 'human' })
+      await command(right, 'actor.register', { id: 'carol', handle: 'other', kind: 'agent' })
+      left.handle.merge(right.handle)
+      assert.throws(() => resolveActor(left.handle.doc(), 'carol'), { code: 'AMBIGUOUS_ACTOR' })
+      assert.equal(resolveActor(left.handle.doc(), 'actor-carol').handle, 'carol')
+      assert.equal(resolveActor(left.handle.doc(), 'other').id, 'carol')
+    })
+  })
+
   it('keeps a comment unread while any concurrent revision remains unseen', async () => {
     await withWorkspaces(async (workspace, create) => {
       const taskId = await createTask(workspace)

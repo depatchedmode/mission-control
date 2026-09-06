@@ -1,6 +1,6 @@
 # Pardner local service and CLI
 
-The default service and executable now use the version 2 workspace. Human and
+The default service and executable now use the version 3 workspace. Human and
 agent Actors author through the same local HTTP operations. The UI integration and
 full acceptance milestone are still in progress; see [implementation evidence](PARDNER-EVIDENCE.md).
 
@@ -71,6 +71,13 @@ credentials. CLI and UI should connect to the local service on each machine.
 Existing incompatible storage is rejected and left intact. Choose a fresh
 directory; there is no automatic migration. A second process cannot own the same
 directory, and process death releases its OS-backed lock.
+
+Version 3 stores mutable task fields and comment bodies in shared register maps.
+Retried creation requests on disconnected replicas therefore share each field's
+merge location. A shared map records superseded field revisions, so a late
+retry cannot resurrect an initial value after an edit or explicit resolution.
+Version 2 directories must be preserved and replaced with a fresh workspace; all
+services participating in a workspace must use the same schema version.
 
 ## Read, edit, and hand off
 

@@ -7,6 +7,7 @@ import { fileURLToPath } from 'node:url'
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import AutomergeSyncServer from '../automerge-sync-server.js'
+import { SCHEMA_VERSION } from '../lib/workspace-schema.js'
 
 const exec = promisify(execFile)
 const root = fileURLToPath(new URL('..', import.meta.url))
@@ -42,7 +43,7 @@ it('creates new Pardner storage without touching existing legacy data', async ()
     assert.equal(await readFile(join(legacy, 'keep'), 'utf8'), 'legacy data must survive')
     const manifest = JSON.parse(await readFile(join(pardnerDirectory, 'workspace.json'), 'utf8'))
     assert.equal(manifest.url, server.store.docHandle.url)
-    assert.equal(manifest.schemaVersion, 2)
+    assert.equal(manifest.schemaVersion, SCHEMA_VERSION)
   } finally {
     await server.stop()
     await rm(directory, { recursive: true, force: true })

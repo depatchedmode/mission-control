@@ -4,6 +4,7 @@ import { mkdtemp, readFile, rm, stat } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { cli, startCliService } from '../support/cli-resources.js'
+import { SCHEMA_VERSION } from '../lib/workspace-schema.js'
 
 it('runs human to agent to agent to human handoffs through the public CLI service path', { timeout: 30000 }, async () => {
   const directory = await mkdtemp(join(tmpdir(), 'pardner-cli-workflow-'))
@@ -54,7 +55,7 @@ it('runs human to agent to agent to human handoffs through the public CLI servic
     assert.equal(final.task.assignee, 'alice')
     assert.equal(final.task.status, 'completed')
     assert.equal(final.history.filter(event => event.type === 'task.handoff').length, 3)
-    assert.equal(JSON.parse(await readFile(join(directory, 'workspace.json'), 'utf8')).schemaVersion, 2)
+    assert.equal(JSON.parse(await readFile(join(directory, 'workspace.json'), 'utf8')).schemaVersion, SCHEMA_VERSION)
   } finally {
     await service.stop()
     await rm(directory, { recursive: true, force: true })

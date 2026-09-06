@@ -50,6 +50,33 @@ function edit(replica, taskId, updates, actorId) {
     payload: { taskId, updates, expectedRevisions: Object.fromEntries(Object.keys(updates).map(field => [field, revisions[field]])) } })
 }
 
+it('retains acknowledged edits when a creation request is replayed on disconnected replicas', { timeout: 30000 }, async () => {
+  await withReplicas(async ({ context, gates, replicas, reopen, converge }) => {
+    gates.forEach(gate => gate.partition())
+    const request = { operationId: 'same-create-request', actorId: 'alice', type: 'task.create', payload: { title: 'Cross-device retry' } }
+    const created = await Promise.all(replicas.map(replica => replica.execute(request)))
+    const taskId = created[0].result.taskId
+    const edits = await Promise.all([
+      edit(replicas[0], taskId, { description: 'Acknowledged description' }, 'alice'),
+      edit(replicas[1], taskId, { priority: 'p0' }, 'alice'),
+    ])
+    assert.ok([...created, ...edits].every(receipt => receipt.savedLocally))
+    gates.forEach(gate => gate.partition(false))
+    await converge()
+    await eventually(() => replicas.every(replica => replica.workspace.taskContext(taskId).task.priority === 'p0'
+      && replica.workspace.taskContext(taskId).task.description === 'Acknowledged description'))
+    await replicas[0].close()
+    await reopen(0)
+    for (const result of [await context(taskId), ...replicas.map(replica => replica.workspace.taskContext(taskId))]) {
+      assert.equal(result.task.description, 'Acknowledged description')
+      assert.equal(result.task.priority, 'p0')
+      assert.deepEqual(result.conflicts, {})
+      assert.equal(result.history.filter(event => event.operationId === request.operationId).length, 1)
+      for (const receipt of edits) assert.ok(result.history.some(event => event.operationId === receipt.operationId))
+    }
+  })
+})
+
 it('UC1: two Actors on the same hub retain concurrent disjoint changes and attribution', { timeout: 20000 }, async () => {
   await withWorkspaceServer(async ({ create, context, operation }) => {
     const taskId = await create()

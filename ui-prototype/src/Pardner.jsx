@@ -100,6 +100,9 @@ export default function Pardner() {
     }
   })
   const inflight = useRef(false)
+  const docUpdates = useRef(0)
+  const statusUpdates = useRef(0)
+  const refreshGeneration = useRef(0)
   useEffect(() => {
     fetch('/pardner/config')
       .then((response) => {
@@ -133,12 +136,16 @@ export default function Pardner() {
     [config, token],
   )
   const refresh = useCallback(async () => {
+    const generation = ++refreshGeneration.current
+    const observedDoc = docUpdates.current
+    const observedStatus = statusUpdates.current
     const [{ doc: next }, state] = await Promise.all([
       request('/automerge/doc'),
       request('/automerge/status'),
     ])
-    setDoc(next)
-    setStatus(state)
+    if (generation !== refreshGeneration.current) return
+    if (observedDoc === docUpdates.current) setDoc(next)
+    if (observedStatus === statusUpdates.current) setStatus(state)
   }, [request])
   useEffect(() => {
     if (!token || !config) return
@@ -148,6 +155,7 @@ export default function Pardner() {
     const connect = async () => {
       try {
         await refresh()
+        if (stopped) return
         const { ticket } = await request('/automerge/ws-ticket', {})
         if (stopped) return
         const url = new URL(location.href)
@@ -161,9 +169,16 @@ export default function Pardner() {
           sessionStorage.setItem(TOKEN_KEY, token)
         }
         socket.onmessage = (event) => {
+          if (stopped) return
           const message = JSON.parse(event.data)
-          if (message.doc) setDoc(message.doc)
-          if (message.status) setStatus(message.status)
+          if (message.doc) {
+            docUpdates.current++
+            setDoc(message.doc)
+          }
+          if (message.status) {
+            statusUpdates.current++
+            setStatus(message.status)
+          }
         }
         socket.onclose = () => {
           setConnected(false)
@@ -184,6 +199,7 @@ export default function Pardner() {
     void connect()
     return () => {
       stopped = true
+      refreshGeneration.current++
       clearTimeout(timer)
       socket?.close()
     }
@@ -230,6 +246,7 @@ export default function Pardner() {
           'STALE_UPDATE',
           'CONFLICT_REQUIRES_RESOLUTION',
           'INVALID_ARGUMENT',
+          'AMBIGUOUS_ACTOR',
           'NOT_FOUND',
           'OPERATION_ID_REUSED',
         ].includes(failure.code)
@@ -580,7 +597,7 @@ function TaskDetail({
   const [handoffStatus, setHandoffStatus] = useState('review')
   const [handoffMessage, setHandoffMessage] = useState('')
   const [failure, setFailure] = useState(null)
-  const handoffBase = useRef(null)
+  const [handoffBase, setHandoffBase] = useState(null)
   useEffect(() => {
     if (confirmedOperation?.payload.taskId !== taskId) return
     if (confirmedOperation.type === 'comment.add') {
@@ -588,7 +605,7 @@ function TaskDetail({
     }
     if (confirmedOperation.type === 'task.handoff') {
       setHandoffMessage(current => current === confirmedOperation.payload.message ? '' : current)
-      handoffBase.current = null
+      setHandoffBase(null)
     }
   }, [confirmedOperation, taskId])
   useEffect(() => {
@@ -626,6 +643,8 @@ function TaskDetail({
     )
   const { task, comments, history, conflicts, revisions } = context
   const canWrite = Boolean(actor) && !busy
+  const handoffRevisions = { assignee: revisions.assignee, status: revisions.status }
+  const handoffStale = handoffBase && JSON.stringify(handoffBase) !== JSON.stringify(handoffRevisions)
   return (
     <aside className="side-panel" aria-label="Task details">
       <div className="panel-heading">
@@ -728,10 +747,7 @@ function TaskDetail({
         <h3>Hand off work</h3>
         <form
           onFocusCapture={() => {
-            handoffBase.current ??= {
-              assignee: revisions.assignee,
-              status: revisions.status,
-            }
+            setHandoffBase(current => current ?? handoffRevisions)
           }}
           onSubmit={async (event) => {
             event.preventDefault()
@@ -740,14 +756,23 @@ function TaskDetail({
               to,
               status: handoffStatus,
               message: handoffMessage,
-              expectedRevisions: handoffBase.current,
+              expectedRevisions: handoffBase,
             })
             if (receipt) {
               setHandoffMessage(current => current === handoffMessage ? '' : current)
-              handoffBase.current = null
+              setHandoffBase(null)
             }
           }}
         >
+          {handoffStale && (
+            <div className="notice" role="status">
+              <p>Assignment or status changed while you were preparing this handoff. Your draft is preserved.</p>
+              <p>Current task: {labelActor(actors[task.assignee])} · {LABELS[task.status]}.</p>
+              <button type="button" disabled={!canWrite} onClick={() => setHandoffBase(handoffRevisions)}>
+                Use latest task details
+              </button>
+            </div>
+          )}
           <SelectActor
             label="Recipient"
             actors={actors}
@@ -770,12 +795,13 @@ function TaskDetail({
           <label>
             Handoff message
             <textarea
+              aria-label="Handoff message"
               required
               value={handoffMessage}
               onChange={(event) => setHandoffMessage(event.target.value)}
             />
           </label>
-          <button disabled={!canWrite || !to}>Hand off</button>
+          <button disabled={!canWrite || !to || handoffStale}>Hand off</button>
         </form>
       </section>
       <section>
@@ -844,6 +870,7 @@ function TaskDetail({
           <label>
             Comment
             <textarea
+              aria-label="Comment"
               required
               value={message}
               onChange={(event) => setMessage(event.target.value)}
