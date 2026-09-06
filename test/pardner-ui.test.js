@@ -165,6 +165,24 @@ for (const uuidAvailable of [true, false]) it(
       assert.equal(attempts.length, 2)
       assert.deepEqual(attempts[0], attempts[1])
       await alice.unroute('**/automerge/operations')
+
+      await alice.route('**/automerge/operations', route => route.fulfill({
+        status: 400, contentType: 'application/json',
+        body: JSON.stringify({ code: 'AMBIGUOUS_ACTOR', error: 'Ambiguous Actor: choose another reference' }),
+      }))
+      await alice.getByLabel('Comment', { exact: true }).fill('Preserve this draft after Actor rejection')
+      await alice.getByRole('button', { name: 'Add comment', exact: true }).click()
+      await alice.getByRole('alert').getByText(/Ambiguous Actor/).waitFor()
+      assert.equal(await alice.getByRole('button', { name: 'Retry saved request', exact: true }).count(), 0)
+      assert.equal(await alice.getByLabel('Comment', { exact: true }).inputValue(), 'Preserve this draft after Actor rejection')
+      await alice.unroute('**/automerge/operations')
+      await alice.getByLabel('Actor', { exact: true }).selectOption('bob')
+      await alice.getByLabel('Comment', { exact: true }).fill('New request after correcting the Actor')
+      await alice.getByRole('button', { name: 'Add comment', exact: true }).click()
+      await alice.getByText('New request after correcting the Actor', { exact: true }).waitFor()
+      assert.equal((await run(['show', taskId])).comments.find(comment => comment.content === 'New request after correcting the Actor').actorId, 'bob')
+      await alice.getByLabel('Actor', { exact: true }).selectOption('alice')
+
       const output = resolve('output/playwright')
       await mkdir(output, { recursive: true })
       await alice.getByRole('button', { name: 'Close', exact: true }).click()

@@ -8,6 +8,7 @@ import { save } from '@automerge/automerge'
 import { DurableRepo } from '../lib/durable-repo.js'
 import { NodeFSStorageAdapter } from '../lib/nodefs-storage-adapter.js'
 import { Workspace, createWorkspaceData } from '../lib/workspace.js'
+import { resolveActor } from '../lib/workspace-schema.js'
 
 const actors = [
   { id: 'alice', handle: 'alice', kind: 'human' },
@@ -48,6 +49,33 @@ function updatePayload(workspace, taskId, updates) {
 }
 
 describe('shared workspace operations', () => {
+  it('rejects Actor ID and handle collisions during registration and bootstrap', async () => {
+    await withWorkspaces(async workspace => {
+      await command(workspace, 'actor.register', { id: 'actor-carol', handle: 'carol', kind: 'human' })
+      for (const payload of [
+        { id: 'carol', handle: 'other', kind: 'agent' },
+        { id: 'CAROL', handle: 'other', kind: 'agent' },
+        { id: 'other', handle: 'actor-carol', kind: 'agent' },
+      ]) {
+        await assert.rejects(command(workspace, 'actor.register', payload), { code: 'ALREADY_EXISTS' })
+        assert.throws(() => createWorkspaceData({ actors: [{ id: 'actor-carol', handle: 'carol', kind: 'human' }, payload] }), { code: 'ALREADY_EXISTS' })
+      }
+      assert.equal(resolveActor(workspace.handle.doc(), 'carol').id, 'actor-carol')
+    })
+  })
+
+  it('rejects ambiguous handles after independently registered Actors merge', async () => {
+    await withWorkspaces(async (left, create) => {
+      const right = await create(left)
+      await command(left, 'actor.register', { id: 'actor-carol', handle: 'carol', kind: 'human' })
+      await command(right, 'actor.register', { id: 'carol', handle: 'other', kind: 'agent' })
+      left.handle.merge(right.handle)
+      assert.throws(() => resolveActor(left.handle.doc(), 'carol'), { code: 'AMBIGUOUS_ACTOR' })
+      assert.equal(resolveActor(left.handle.doc(), 'actor-carol').handle, 'carol')
+      assert.equal(resolveActor(left.handle.doc(), 'other').id, 'carol')
+    })
+  })
+
   it('keeps a comment unread while any concurrent revision remains unseen', async () => {
     await withWorkspaces(async (workspace, create) => {
       const taskId = await createTask(workspace)

@@ -230,6 +230,7 @@ export default function Pardner() {
           'STALE_UPDATE',
           'CONFLICT_REQUIRES_RESOLUTION',
           'INVALID_ARGUMENT',
+          'AMBIGUOUS_ACTOR',
           'NOT_FOUND',
           'OPERATION_ID_REUSED',
         ].includes(failure.code)
@@ -844,6 +845,7 @@ function TaskDetail({
           <label>
             Comment
             <textarea
+              aria-label="Comment"
               required
               value={message}
               onChange={(event) => setMessage(event.target.value)}
