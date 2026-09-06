@@ -1,16 +1,16 @@
 # Agent Trace
 
-Commit attribution tracking for agent-assisted development. Every commit made through `pardner commit` gets tagged with agent context for future audit trails.
+Commit attribution tracking for agent-assisted development. Every commit made through `pardner commit` gets tagged with the selected Actor and optional model/session context for future audit trails.
 
 ## Quick Start
 
 ```bash
 # Instead of: git commit -m "feat: add feature"
 # Use:
-pardner commit -m "feat: add feature"
+pardner commit --actor builder -- -m "feat: add feature"
 
 # Link to a Pardner task
-pardner commit -m "fix: resolve bug" --task task-abc123
+pardner commit --actor builder --task task-abc123 -- -m "fix: resolve bug"
 
 # View recent traced commits
 pardner trace list
@@ -25,7 +25,7 @@ Each trace records:
 
 | Field | Source | Description |
 |-------|--------|-------------|
-| `agent.name` | `--agent` or `PARDNER_AGENT` env | Who made the commit |
+| `agent.name` | `--actor`, its `--agent` alias, or `PARDNER_ACTOR` env | Who made the commit |
 | `agent.model` | `--model` or `PARDNER_AGENT_MODEL` env | AI model used |
 | `agent.sessionKey` | `--session` or `PARDNER_AGENT_SESSION_KEY` env | Session for context lookup |
 | `task` | `--task` flag | Linked Pardner task |
@@ -40,23 +40,23 @@ Each trace records:
 
 ### `pardner commit`
 
-Drop-in replacement for `git commit`. All standard git commit flags work.
+Run inside a Git repository. Select an Actor with `--actor` or `PARDNER_ACTOR`.
+Put Pardner options before `--` and all Git commit arguments after it. Git output
+goes to stderr; stdout contains one JSON result with `trace` and `receipt` fields.
+Without `--task`, the receipt is `null` and no local coordination service is needed.
 
 ```bash
 # Basic usage
-pardner commit -m "message"
+pardner commit --actor builder -- -m "message"
 
 # With all options
-pardner commit -m "message" \
-  --task task-123 \
-  --agent gary \
-  --model claude-opus \
-  --session sess-abc
+pardner commit --actor builder --task task-123 \
+  --model claude-opus --session sess-abc -- -m "message"
 
-# All other flags pass through to git
-pardner commit -am "message"           # Stage and commit
-pardner commit --amend                 # Amend previous commit
-pardner commit -m "msg" --no-verify    # Skip hooks
+# Arguments after -- pass through to Git
+pardner commit --actor builder -- -am "message"         # Stage tracked changes and commit
+pardner commit --actor builder -- --amend               # Amend previous commit
+pardner commit --actor builder -- -m "msg" --no-verify   # Skip hooks
 ```
 
 ### `pardner trace list`
@@ -68,20 +68,7 @@ pardner trace list              # Last 20 traces
 pardner trace list --limit 50   # Last 50 traces
 ```
 
-Output:
-```
-📋 Recent traced commits (3):
-
-  abc123de @gary 2m ago
-    "feat: add user authentication"
-    Model: claude-opus
-    Task: task-xyz
-    3 files changed, 150 insertions(+), 20 deletions(-)
-
-  def456ab @gary 1h ago
-    "fix: resolve login bug"
-    2 files changed, 10 insertions(+), 5 deletions(-)
-```
+Returns a JSON object with a `traces` array containing the stored trace records.
 
 ### `pardner trace show`
 
@@ -89,28 +76,10 @@ Show full details for a specific commit.
 
 ```bash
 pardner trace show abc123de    # Short hash works
-pardner trace show abc123...   # Full hash works too
+pardner trace show FULL_COMMIT_HASH
 ```
 
-Output:
-```
-📋 Trace: abc123def456789...
-──────────────────────────────────────────────────
-Timestamp:   2026-02-10T15:30:00.000Z
-Message:     feat: add user authentication
-Author:      gary-agent <gary@example.com>
-
-Agent:       @gary
-Model:       claude-opus
-Session:     agent:gary:main
-Task:        task-xyz
-
-Diff stats:
- src/auth.js     | 100 +++++++++
- src/login.js    |  50 +++++
- tests/auth.test.js | 20 ++
- 3 files changed, 150 insertions(+), 20 deletions(-)
-```
+Returns a JSON object with a `trace` field containing the matching record.
 
 ## Storage
 
@@ -160,14 +129,14 @@ your-repo/
 Set these to avoid passing flags every time:
 
 ```bash
-export PARDNER_AGENT=gary
+export PARDNER_ACTOR=builder
 export PARDNER_AGENT_MODEL=claude-opus
 export PARDNER_AGENT_SESSION_KEY=agent:gary:main
 ```
 
 Then just:
 ```bash
-pardner commit -m "message"  # Uses env vars automatically
+pardner commit -- -m "message"  # Uses env vars automatically
 ```
 
 Legacy aliases remain supported for compatibility:
@@ -200,22 +169,23 @@ This creates an audit trail from commit → agent → conversation → decisions
 
 ## Patchwork Integration
 
-When you use `--task`, the commit is automatically linked to the task's Patchwork timeline:
+When you use `--task`, Pardner reads the task from the local service before
+committing, then records a `task.link-commit` operation with the selected Actor:
 
 ```bash
-pardner commit -m "fix: resolve bug" --task task-abc123
-# 📋 Trace recorded: abc123de
-#    Agent: @gary
-#    Task: task-abc123
-#    📎 Linked to Patchwork timeline
+pardner commit --actor builder --task task-abc123 -- -m "fix: resolve bug"
 ```
 
 This means:
-- **`pardner diff <task-id>`** shows commits alongside task status changes
+- **`pardner show <task-id>`** includes commit evidence alongside task context
 - **`pardner trace task <task-id>`** lists all commits for a task
 - **`pardner timeline`** shows commit events in the activity feed
 
 Full provenance chain: **commit → agent trace → task → conversation**
+
+If linking fails after Git succeeds, the error includes the existing commit hash
+and recovery instructions. Use `pardner link-commit` to attach that commit; do
+not rerun `pardner commit` and create another commit.
 
 ## Future Plans
 
