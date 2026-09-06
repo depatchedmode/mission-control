@@ -34,10 +34,10 @@ it('comments and mentions preserve canonical task references and stable recipien
   })
 })
 
-for (const legacy of ['workspace.json', 'document-url']) {
-  it(`rejects incompatible ${legacy} without migrating or modifying its contents`, async () => {
+for (const [legacy, schemaVersion] of [['workspace.json', 1], ['workspace.json', 2], ['document-url', null]]) {
+  it(`rejects incompatible ${legacy}${schemaVersion ? ` version ${schemaVersion}` : ''} without migrating or modifying its contents`, async () => {
     const directory = await mkdtemp(join(tmpdir(), 'pardner-legacy-rejection-'))
-    const contents = legacy === 'workspace.json' ? JSON.stringify({ schemaVersion: 1, workspaceId: 'old-workspace' }) : 'automerge:legacy-document'
+    const contents = legacy === 'workspace.json' ? JSON.stringify({ schemaVersion, workspaceId: 'old-workspace' }) : 'automerge:legacy-document'
     const runtime = new WorkspaceRuntime({ directory })
     try {
       await writeFile(join(directory, legacy), contents)

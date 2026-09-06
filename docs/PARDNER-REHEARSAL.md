@@ -8,7 +8,7 @@ usable without its hub regardless of the provider chosen.
 ## Setup
 
 Use the same Pardner checkout and Node version on both machines. Install root and
-UI dependencies and build the UI. Start a fresh version 2 workspace: prior installs
+UI dependencies and build the UI. Start a fresh version 3 workspace: prior installs
 are considered stale and must not be migrated or deleted automatically.
 
 On machine A, run a hub in a separate directory on ports 18004/18005. Bind it to

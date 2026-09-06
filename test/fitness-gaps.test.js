@@ -3,6 +3,7 @@ import assert from 'node:assert/strict'
 import { Repo } from '@automerge/automerge-repo'
 import { WebSocketClientAdapter } from '@automerge/automerge-repo-network-websocket'
 import { withWorkspaceServer } from '../support/workspace-test.js'
+import { SCHEMA_VERSION, taskView } from '../lib/workspace-schema.js'
 
 it('a native Automerge Repo peer resolves the production schema over the CBOR WebSocket endpoint', { timeout: 10000 }, async () => {
   await withWorkspaceServer(async ({ server, api, create }) => {
@@ -14,8 +15,8 @@ it('a native Automerge Repo peer resolves the production schema over the CBOR We
     try {
       const handle = await repo.find(url, { signal: AbortSignal.timeout(3000) })
       const doc = handle.doc()
-      assert.equal(doc.schemaVersion, 2)
-      assert.equal(doc.tasks[taskId].fields.title.value, 'Native wire contract')
+      assert.equal(doc.schemaVersion, SCHEMA_VERSION)
+      assert.equal(taskView(doc, taskId).title, 'Native wire contract')
       assert.equal(doc.actors.builder.kind, 'agent')
     } finally {
       adapter.socket?.terminate()
@@ -50,7 +51,7 @@ it('field effects and attributed history become visible in one Automerge change'
     const observations = []
     const observe = () => {
       const doc = server.store.docHandle.doc()
-      observations.push({ status: doc.tasks[taskId].fields.status.value,
+      observations.push({ status: taskView(doc, taskId).status,
         events: Object.values(doc.operations).filter(event => event.taskId === taskId && event.type === 'task.update') })
     }
     server.store.docHandle.on('change', observe)

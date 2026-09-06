@@ -127,7 +127,7 @@ is prepared for separate human signoff; automated success does not claim it ran.
 
 ## Storage and dependencies
 
-A version 2 directory contains workspace metadata, Automerge storage, an exclusive
+A version 3 directory contains workspace metadata, Automerge storage, an exclusive
 service lock, and local connection settings. The hub additionally holds the
 SQLite delivery ledger. Incompatible prior installs are rejected and preserved;
 choose a new directory rather than migrating or deleting existing data.
