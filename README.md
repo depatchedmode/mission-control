@@ -121,8 +121,9 @@ npm run test:acceptance -- --repeat 20 --seed 1
 
 See the [acceptance contract](docs/PARDNER-ACCEPTANCE.md) for scenario details and
 artifact locations, and [implementation evidence](docs/PARDNER-EVIDENCE.md) for
-what has actually passed. The 20-seed acceptance gate and fresh-checkout verification
-have passed; see the [completed milestone audit](docs/PARDNER-GOAL-AUDIT.md). The [two-machine real-agent rehearsal](docs/PARDNER-REHEARSAL.md)
+what has actually passed. The schema 2 milestone passed the 20-seed acceptance gate
+and fresh-checkout verification. Schema 3 review fixes passed `npm run verify`;
+see the separate qualification in the [milestone audit](docs/PARDNER-GOAL-AUDIT.md). The [two-machine real-agent rehearsal](docs/PARDNER-REHEARSAL.md)
 is prepared for separate human signoff; automated success does not claim it ran.
 
 ## Storage and dependencies
