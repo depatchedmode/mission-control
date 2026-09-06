@@ -2,6 +2,8 @@ import { it } from 'node:test'
 import assert from 'node:assert/strict'
 import { once } from 'node:events'
 import { createServer } from 'node:http'
+import { WebSocketServer } from 'ws'
+import { WebSocketServerAdapter } from '@automerge/automerge-repo-network-websocket'
 import { Workspace } from '../lib/workspace.js'
 import { DurableRepo } from '../lib/durable-repo.js'
 import { NodeFSStorageAdapter } from '../lib/nodefs-storage-adapter.js'
@@ -10,6 +12,43 @@ import {
   withStartedServer, createTask, createTempDir, cleanupTempDir,
   mintWsTicket, nativeAutomergeWsUrl, waitFor,
 } from '../support/resources.js'
+
+it('renews its ticket after a stalled handshake and connects without restarting', { timeout: 5000 }, async () => {
+  const server = createServer()
+  const sockets = new Set()
+  const native = new WebSocketServer({ noServer: true })
+  const hubAdapter = new WebSocketServerAdapter(native)
+  hubAdapter.connect('hub-peer', {})
+  server.on('connection', socket => {
+    sockets.add(socket)
+    socket.on('close', () => sockets.delete(socket))
+  })
+  let upgrades = 0
+  server.on('upgrade', (request, socket, head) => {
+    if (++upgrades > 1) native.handleUpgrade(request, socket, head, connection => native.emit('connection', connection, request))
+  })
+  server.listen(0, '127.0.0.1')
+  await once(server, 'listening')
+  const tickets = []
+  const adapter = new TicketNetworkAdapter({ retryMs: 20, connectTimeoutMs: 100, getUrl: async () => {
+    const ticket = `ticket-${tickets.length}`
+    tickets.push(ticket)
+    return `ws://127.0.0.1:${server.address().port}/?ticket=${ticket}`
+  } })
+  try {
+    adapter.connect('replica-peer', {})
+    await waitFor(() => adapter.state === 'connected')
+    assert.equal(upgrades, 2)
+    assert.deepEqual(tickets, ['ticket-0', 'ticket-1'])
+    assert.equal(adapter.child.socket.readyState, 1)
+  } finally {
+    adapter.disconnect()
+    hubAdapter.disconnect()
+    for (const socket of sockets) socket.destroy()
+    await new Promise(resolve => native.close(resolve))
+    await new Promise(resolve => server.close(resolve))
+  }
+})
 
 it('shuts down safely while a WebSocket handshake is still pending', { timeout: 5000 }, async () => {
   const directory = createTempDir('pardner-handshake-')
