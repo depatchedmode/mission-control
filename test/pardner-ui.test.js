@@ -6,8 +6,8 @@ import { join, resolve } from 'node:path'
 import { chromium } from 'playwright'
 import { cli, startCliService } from '../support/cli-resources.js'
 
-it(
-  'uses runtime credentials and shared operations in two independent browser sessions',
+for (const uuidAvailable of [true, false]) it(
+  `uses shared browser operations with crypto.randomUUID ${uuidAvailable ? 'available' : 'unavailable'}`,
   { timeout: 60000 },
   async () => {
     const directory = await mkdtemp(join(tmpdir(), 'pardner-ui-'))
@@ -34,6 +34,9 @@ it(
       for (const actor of ['alice', 'bob']) {
         const context = await browser.newContext({
           viewport: { width: 1440, height: 1000 },
+        })
+        if (!uuidAvailable) await context.addInitScript(() => {
+          Object.defineProperty(crypto, 'randomUUID', { value: undefined })
         })
         const page = await context.newPage()
         page.on('pageerror', (error) => errors.push(error.message))
@@ -126,6 +129,11 @@ it(
       await alice
         .getByRole('button', { name: 'Cancel edit', exact: true })
         .click()
+      await alice.getByRole('button', { name: 'Edit task', exact: true }).click()
+      await alice.getByLabel('Status', { exact: true }).selectOption('in-progress')
+      await alice.getByRole('button', { name: 'Save changes', exact: true }).click()
+      await alice.getByRole('button', { name: 'Edit task', exact: true }).waitFor()
+      assert.equal((await run(['show', taskId])).task.status, 'in-progress')
       await alice
         .getByLabel('Recipient', { exact: true })
         .selectOption('builder')
@@ -138,8 +146,11 @@ it(
         .waitFor()
       assert.equal((await run(['show', taskId])).task.assignee, 'builder')
       let lost = false
+      const attempts = []
       await alice.route('**/automerge/operations', async route => {
-        if (!lost && route.request().postDataJSON().type === 'comment.add') {
+        const operation = route.request().postDataJSON()
+        if (operation.type === 'comment.add') attempts.push(operation)
+        if (!lost && operation.type === 'comment.add') {
           lost = true
           assert.equal((await route.fetch()).status(), 200)
           await route.abort('failed')
@@ -151,6 +162,8 @@ it(
       await alice.getByRole('button', { name: 'Retry saved request', exact: true }).waitFor({ state: 'hidden' })
       assert.equal(await alice.getByLabel('Comment', { exact: true }).inputValue(), '')
       assert.equal((await run(['show', taskId])).comments.filter(comment => comment.content === 'Confirm exactly once after a lost response').length, 1)
+      assert.equal(attempts.length, 2)
+      assert.deepEqual(attempts[0], attempts[1])
       await alice.unroute('**/automerge/operations')
       const output = resolve('output/playwright')
       await mkdir(output, { recursive: true })
