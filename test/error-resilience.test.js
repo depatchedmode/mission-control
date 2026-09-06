@@ -1,297 +1,105 @@
-#!/usr/bin/env node
-
-/**
- * Fitness Test: Error Resilience
- *
- * Validates that the system handles invalid inputs, missing resources,
- * and edge cases with clear errors — not crashes or 500s.
- */
-
-import { describe, it } from 'node:test'
+import { it } from 'node:test'
 import assert from 'node:assert/strict'
-import {
-  withStartedServer,
-  authedFetch,
-  authedPost,
-  authedPatch,
-  authedDelete,
-  httpUrl,
-} from '../support/resources.js'
+import { withWorkspaceServer } from '../support/workspace-test.js'
 
-const UNAUTHORIZED_ENDPOINTS = [
-  ['GET', '/automerge/doc'],
-  ['GET', '/automerge/url'],
-  ['GET', '/automerge/mentions/pending'],
-  ['POST', '/automerge/comment'],
-  ['POST', '/automerge/task'],
-  ['POST', '/automerge/agent'],
-  ['POST', '/automerge/last-seen'],
-  ['POST', '/automerge/ws-ticket'],
-  ['POST', '/automerge/mentions/fake/deliver'],
-  ['POST', '/automerge/mentions/fake/claim'],
-  ['POST', '/automerge/mentions/claim-next'],
-  ['POST', '/automerge/mentions/fake/release'],
-  ['PATCH', '/automerge/task/fake'],
-  ['PATCH', '/automerge/comment/fake'],
-  ['DELETE', '/automerge/comment/fake'],
-  ['GET', '/automerge/task/fake/history'],
-  ['GET', '/automerge/task/fake/branches'],
-  ['POST', '/automerge/task/fake/branch'],
-  ['POST', '/automerge/task/fake/commit'],
-  ['POST', '/automerge/branch/fake/merge'],
-]
-
-async function fetchWithoutAuth(server, method, path) {
-  const url = httpUrl(server, path)
-  return fetch(url, {
-    method,
-    headers: { 'Content-Type': 'application/json' },
-    body: method === 'GET' || method === 'DELETE' ? undefined : '{}',
+for (const [type, payload] of [
+  ['task.update', { taskId: 'missing', updates: { status: 'review' }, expectedRevisions: {} }],
+  ['task.link-commit', { taskId: 'missing', commit: { hash: 'abc1234', message: 'Test' } }],
+  ['task.branch', { taskId: 'missing', name: 'experiment' }],
+  ['task.merge', { branchId: 'missing', expectedRevisions: {} }],
+  ['comment.delete', { commentId: 'missing', expectedRevisions: [] }],
+  ['comment.edit', { commentId: 'missing', text: 'Updated', expectedRevisions: [] }],
+]) {
+  it(`${type} rejects a missing resource with a structured 404`, async () => {
+    await withWorkspaceServer(async ({ operation }) => {
+      const result = await operation(type, payload)
+      assert.equal(result.httpStatus, 404)
+      assert.equal(result.code, 'NOT_FOUND')
+    })
   })
 }
 
-describe('error resilience', () => {
-  // ─── Missing Resources ───
-
-  it('PATCH nonexistent task returns 404', async () => {
-    await withStartedServer({}, async server => {
-      const result = await authedPatch(server, '/automerge/task/nonexistent', {
-        status: 'in-progress',
-        agent: 'gary',
-      })
-      assert.equal(result.status, 404)
-      assert.match(result.error, /not found/i)
+for (const [label, type, fields] of [
+  ['missing title', 'task.create', {}],
+  ['empty title', 'task.create', { title: '' }],
+  ['missing branch name', 'task.branch', {}],
+  ['missing Actor fields', 'actor.register', {}],
+  ['blank Actor handle', 'actor.register', { id: 'new-actor', handle: '  ', kind: 'agent' }],
+  ['missing commit hash', 'task.link-commit', { commit: { message: 'No hash' } }],
+  ['missing observed revisions', 'read.mark', {}],
+]) {
+  it(`rejects ${label} without changing the workspace`, async () => {
+    await withWorkspaceServer(async ({ create, operation, api }) => {
+      const taskId = await create()
+      const before = (await api('/automerge/doc')).doc
+      const result = await operation(type, { taskId, ...fields })
+      assert.equal(result.httpStatus, 400)
+      assert.equal(typeof result.code, 'string')
+      assert.deepEqual((await api('/automerge/doc')).doc, before)
     })
   })
+}
 
-  it('POST commit to nonexistent task returns 404', async () => {
-    await withStartedServer({}, async server => {
-      const result = await authedPost(server, '/automerge/task/nonexistent/commit', {
-        agent: 'gary',
-        commit: { hash: 'abc123', message: 'test' },
-      })
-      assert.equal(result.status, 404)
+it('all workspace, transport, delivery, and trace endpoints require authentication', async () => {
+  await withWorkspaceServer(async ({ api }) => {
+    const routes = [
+      ['GET', '/automerge/doc'], ['GET', '/automerge/url'], ['GET', '/automerge/status'],
+      ['GET', '/automerge/task/missing/context'], ['GET', '/automerge/deliveries'],
+      ['GET', '/automerge/trace/abc1234'], ['GET', '/automerge/github-remote'],
+      ['POST', '/automerge/operations'], ['POST', '/automerge/sync-ack'], ['POST', '/automerge/ws-ticket'],
+      ...['claim', 'ack', 'release'].map(action => ['POST', `/automerge/deliveries/${action}`]),
+      ['POST', '/automerge/task'], ['PATCH', '/automerge/task/missing'], ['DELETE', '/automerge/comment/missing'],
+    ]
+    for (const [method, path] of routes) {
+      const result = await api(path, method === 'GET' ? undefined : {}, { method, token: '' })
+      assert.equal(result.httpStatus, 401, `${method} ${path}`)
+      assert.equal(result.code, 'AUTH_REQUIRED')
+    }
+  })
+})
+
+for (const action of ['ack', 'release']) {
+  it(`delivery ${action} rejects missing tokens and nonexistent claims explicitly`, async () => {
+    await withWorkspaceServer(async ({ api }) => {
+      const path = `/automerge/deliveries/${action}`
+      const missing = await api(path, { actorId: 'builder', mentionId: 'missing' })
+      assert.equal(missing.httpStatus, 400)
+      const stale = await api(path, { actorId: 'builder', mentionId: 'missing', claimToken: 'fake-token' })
+      assert.equal(stale.httpStatus, 409)
+      assert.equal(stale.code, 'STALE_CLAIM')
     })
   })
+}
 
-  it('POST branch on nonexistent task returns 404', async () => {
-    await withStartedServer({}, async server => {
-      const result = await authedPost(server, '/automerge/task/nonexistent/branch', {
-        branchName: 'test',
-        agent: 'gary',
-      })
-      assert.equal(result.status, 404)
-    })
+it('claims require a registered Actor and a stable request ID', async () => {
+  await withWorkspaceServer(async ({ api }) => {
+    for (const body of [{}, { actorId: ' ' }, { actorId: 'unknown', requestId: 'poll' }, { actorId: 'builder' }]) {
+      const result = await api('/automerge/deliveries/claim', body)
+      assert.ok([400, 404].includes(result.httpStatus))
+      assert.equal(typeof result.code, 'string')
+    }
+    const empty = await api('/automerge/deliveries/claim', { actorId: 'builder', requestId: 'empty-poll' })
+    assert.equal(empty.httpStatus, 200)
+    assert.equal(empty.claimed, false)
   })
+})
 
-  it('POST merge nonexistent branch returns 400', async () => {
-    await withStartedServer({}, async server => {
-      const result = await authedPost(server, '/automerge/branch/nonexistent/merge', {
-        agent: 'gary',
-      })
-      assert.equal(result.status, 400)
-    })
+it('registers an agent with stable identity and rejects duplicate identity or handle', async () => {
+  await withWorkspaceServer(async ({ operation, api }) => {
+    const actor = { id: 'review-bot', handle: 'review-bot', kind: 'agent' }
+    assert.equal((await operation('actor.register', actor)).savedLocally, true)
+    assert.equal((await api('/automerge/doc')).doc.actors[actor.id].kind, 'agent')
+    for (const duplicate of [actor, { ...actor, id: 'other-id' }]) {
+      assert.equal((await operation('actor.register', duplicate)).code, 'ALREADY_EXISTS')
+    }
   })
+})
 
-  it('DELETE nonexistent comment returns 404', async () => {
-    await withStartedServer({}, async server => {
-      const result = await authedDelete(server, '/automerge/comment/nonexistent')
-      assert.equal(result.status, 404)
-    })
-  })
-
-  it('PATCH nonexistent comment returns 404', async () => {
-    await withStartedServer({}, async server => {
-      const result = await authedPatch(server, '/automerge/comment/nonexistent', {
-        content: 'updated',
-      })
-      assert.equal(result.status, 404)
-    })
-  })
-
-  // ─── Missing Required Fields ───
-
-  it('POST task without title returns 400', async () => {
-    await withStartedServer({}, async server => {
-      const result = await authedPost(server, '/automerge/task', {
-        agent: 'gary',
-      })
-      assert.equal(result.status, 400)
-      assert.match(result.error, /title/i)
-    })
-  })
-
-  it('POST branch without branchName returns 400', async () => {
-    await withStartedServer({}, async server => {
-      // First create a task to branch
-      const { taskId } = await authedPost(server, '/automerge/task', {
-        title: 'Branch me',
-        agent: 'gary',
-      })
-
-      const result = await authedPost(server, `/automerge/task/${taskId}/branch`, {
-        agent: 'gary',
-      })
-      assert.equal(result.status, 400)
-      assert.match(result.error, /branchName/i)
-    })
-  })
-
-  it('POST agent without required fields returns 400', async () => {
-    await withStartedServer({}, async server => {
-      const result = await authedPost(server, '/automerge/agent', {})
-      assert.equal(result.status, 400)
-    })
-  })
-
-  it('POST commit without hash returns 400', async () => {
-    await withStartedServer({}, async server => {
-      const { taskId } = await authedPost(server, '/automerge/task', {
-        title: 'Commit test',
-        agent: 'gary',
-      })
-
-      const result = await authedPost(server, `/automerge/task/${taskId}/commit`, {
-        agent: 'gary',
-        commit: { message: 'no hash' },
-      })
-      assert.equal(result.status, 400)
-    })
-  })
-
-  it('POST last-seen without taskId returns 400', async () => {
-    await withStartedServer({}, async server => {
-      const result = await authedPost(server, '/automerge/last-seen', {})
-      assert.equal(result.status, 400)
-      assert.match(result.error, /taskId/i)
-    })
-  })
-
-  // ─── Auth Sweep ───
-
-  it('all endpoints reject unauthorized requests', async () => {
-    await withStartedServer({}, async server => {
-      // Keep in sync with routes in automerge-sync-server.js setupHTTPAPI().
-      // Currently 20 endpoints — if you add a route, add it here too.
-      for (const [method, path] of UNAUTHORIZED_ENDPOINTS) {
-        const res = await fetchWithoutAuth(server, method, path)
-
-        assert.equal(
-          res.status,
-          401,
-          `${method} ${path} should return 401 without auth, got ${res.status}`
-        )
-      }
-    })
-  })
-
-  // ─── Deliver Nonexistent Mention ───
-
-  it('delivering a nonexistent mention does not crash', async () => {
-    await withStartedServer({}, async server => {
-      const result = await authedPost(server, '/automerge/mentions/fake-id/deliver', {
-        claimToken: 'fake-claim-token',
-      })
-      // Should succeed silently (mark operation on missing key is a no-op)
-      assert.ok(result.success)
-      assert.equal(result.delivered, false)
-    })
-  })
-
-  it('claiming and releasing a nonexistent mention does not crash', async () => {
-    await withStartedServer({}, async server => {
-      const claim = await authedPost(server, '/automerge/mentions/fake-id/claim', {})
-      assert.ok(claim.success)
-      assert.equal(claim.claimed, false)
-
-      const release = await authedPost(server, '/automerge/mentions/fake-id/release', {
-        claimToken: 'fake-claim-token',
-      })
-      assert.ok(release.success)
-      assert.equal(release.released, false)
-    })
-  })
-
-  it('deliver and release reject missing claim tokens', async () => {
-    await withStartedServer({}, async server => {
-      const deliver = await authedPost(server, '/automerge/mentions/fake-id/deliver', {})
-      assert.equal(deliver.status, 400)
-      assert.match(deliver.error, /claimToken/i)
-
-      const release = await authedPost(server, '/automerge/mentions/fake-id/release', {})
-      assert.equal(release.status, 400)
-      assert.match(release.error, /claimToken/i)
-    })
-  })
-
-  it('claim-next rejects missing or blank agent names', async () => {
-    await withStartedServer({}, async server => {
-      const missing = await authedPost(server, '/automerge/mentions/claim-next', {})
-      assert.equal(missing.status, 400)
-      assert.match(missing.error, /agent is required/i)
-
-      const blank = await authedPost(server, '/automerge/mentions/claim-next', {
-        agent: '   ',
-      })
-      assert.equal(blank.status, 400)
-      assert.match(blank.error, /agent is required/i)
-    })
-  })
-
-  it('agent registration accepts a simple name and role', async () => {
-    await withStartedServer({}, async server => {
-      const result = await authedPost(server, '/automerge/agent', {
-        name: 'reviewer-bob',
-        role: 'Reviewer',
-      })
-      assert.equal(result.status, 200)
-      assert.ok(result.success)
-    })
-  })
-
-  it('agent registration rejects blank names', async () => {
-    await withStartedServer({}, async server => {
-      const result = await authedPost(server, '/automerge/agent', {
-        name: '   ',
-      })
-      assert.equal(result.status, 400)
-      assert.match(result.error, /name is required/i)
-    })
-  })
-
-  // ─── Edge Cases ───
-
-  it('creating a task with empty string title is rejected', async () => {
-    await withStartedServer({}, async server => {
-      const result = await authedPost(server, '/automerge/task', {
-        title: '',
-        agent: 'gary',
-      })
-      assert.equal(result.status, 400)
-    })
-  })
-
-  it('GET endpoints return valid JSON on empty state', async () => {
-    await withStartedServer({}, async server => {
-      const doc = await authedFetch(server, '/automerge/doc').then(r => r.json())
-      assert.ok(doc.success)
-      assert.ok(doc.doc)
-
-      const mentions = await authedFetch(server, '/automerge/mentions/pending').then(r =>
-        r.json()
-      )
-      assert.ok(mentions.success)
-      assert.ok(Array.isArray(mentions.mentions))
-
-      const history = await authedFetch(server, '/automerge/task/none/history').then(r =>
-        r.json()
-      )
-      assert.ok(Array.isArray(history.history))
-
-      const branches = await authedFetch(server, '/automerge/task/none/branches').then(r =>
-        r.json()
-      )
-      assert.ok(Array.isArray(branches.branches))
-    })
+it('empty-workspace queries return JSON and missing task context is explicit', async () => {
+  await withWorkspaceServer(async ({ api }) => {
+    assert.deepEqual((await api('/automerge/doc')).doc.tasks, {})
+    assert.equal((await api('/automerge/status')).savedLocally, true)
+    assert.deepEqual((await api('/automerge/deliveries')).mentions, [])
+    assert.equal((await api('/automerge/task/missing/context')).code, 'NOT_FOUND')
   })
 })

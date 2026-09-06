@@ -1,13 +1,12 @@
-# Mission Control Documentation
+# Pardner documentation
 
-## Active docs
+- [CLI and Actor workflows](PARDNER-CLI.md)
+- [Acceptance criteria](PARDNER-ACCEPTANCE.md)
+- [Milestone audit](PARDNER-GOAL-AUDIT.md)
+- [Implementation evidence](PARDNER-EVIDENCE.md)
+- [Commit and trace attribution](AGENT-TRACE.md)
+- [Two-machine rehearsal](PARDNER-REHEARSAL.md)
+- [Three collaboration modes](PARDNER-COLLABORATION-MODES.md)
+- [Remote VM test and results](PARDNER-REMOTE-TEST.md)
 
-| Document | Description |
-|----------|-------------|
-| [AGENT-TRACE.md](AGENT-TRACE.md) | `mc commit` / `mc trace` — git commit attribution |
-
-Product direction and roadmap-style notes live in the root [README.md](../README.md).
-
----
-
-*Last updated: 2026-04-01*
+Product direction and setup are in the root [README.md](../README.md).

@@ -1,22 +1,17 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
-import wasm from 'vite-plugin-wasm'
-import topLevelAwait from 'vite-plugin-top-level-await'
 
-const allowedHosts = (process.env.MC_UI_ALLOWED_HOSTS || 'localhost,127.0.0.1')
+const allowedHosts = (process.env.PARDNER_UI_ALLOWED_HOSTS || 'localhost,127.0.0.1')
   .split(',')
   .map(host => host.trim())
   .filter(Boolean)
-const apiHost = process.env.MC_API_HOST || 'localhost'
-const apiHttpPort = process.env.MC_HTTP_PORT || '8004'
-const apiWsPort = process.env.MC_WS_PORT || '8005'
+const apiHost = process.env.PARDNER_API_HOST || 'localhost'
+const apiHttpPort = process.env.PARDNER_HTTP_PORT || '8004'
+const apiWsPort = process.env.PARDNER_WS_PORT || '8005'
 
 export default defineConfig({
-  plugins: [react(), wasm(), topLevelAwait()],
-  base: '/mc/',
-  optimizeDeps: {
-    exclude: ['@automerge/automerge-wasm']
-  },
+  plugins: [react()],
+  base: '/pardner/',
   server: {
     host: '0.0.0.0',
     port: 5174,
@@ -25,14 +20,15 @@ export default defineConfig({
       allow: ['..']
     },
     proxy: {
-      '/mc-ws': {
+      '/pardner/config': { target: `http://${apiHost}:${apiHttpPort}` },
+      '/pardner-ws': {
         target: `ws://${apiHost}:${apiWsPort}`,
         ws: true,
-        rewrite: (path) => path.replace(/^\/mc-ws/, '')
+        rewrite: (path) => path.replace(/^\/pardner-ws/, '')
       },
-      '/mc-api': {
+      '/pardner-api': {
         target: `http://${apiHost}:${apiHttpPort}`,
-        rewrite: (path) => path.replace(/^\/mc-api/, '')
+        rewrite: (path) => path.replace(/^\/pardner-api/, '')
       }
     }
   },

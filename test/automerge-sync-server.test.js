@@ -18,7 +18,7 @@ import {
 } from '../support/resources.js'
 
 function withTempServer(overrides, fn) {
-  const storagePath = createTempDir('mc-sync-test-')
+  const storagePath = createTempDir('pardner-sync-test-')
   try {
     return fn(createServer(storagePath, overrides))
   } finally {
@@ -129,7 +129,7 @@ async function expectWebSocketOpen(url, options = {}) {
 it('requires an API token unless insecure local mode is enabled', () => {
   assert.throws(
     () => withTempServer({ apiToken: '', allowInsecureLocal: false }, () => {}),
-    /MC_API_TOKEN is required/
+    /PARDNER_API_TOKEN is required/
   )
 
   assert.doesNotThrow(() => withTempServer({ apiToken: '', allowInsecureLocal: true }, () => {}))
@@ -313,50 +313,26 @@ it('allows legacy websocket query tokens only when the compatibility flag is ena
   })
 })
 
-it('records task-linked commits through the HTTP API', async () => {
+it('records task-linked commits through attributed HTTP operations', async () => {
   await withStartedServer({}, async server => {
-    await server.store.docHandle.change(doc => {
-      if (!doc.tasks) doc.tasks = {}
-      doc.tasks['task-123'] = {
-        id: 'task-123',
-        title: 'Track commit through server API',
-        status: 'todo',
-        priority: 'p2',
-        created_at: new Date().toISOString(),
-        updated_at: new Date().toISOString(),
-      }
-    })
-
-    const response = await fetch(httpUrl(server, '/automerge/task/task-123/commit'), {
-      method: 'POST',
-      headers: {
-        Authorization: `Bearer ${TEST_TOKEN}`,
-        'Content-Type': 'application/json',
-      },
-      body: JSON.stringify({
-        agent: 'codex',
-        commit: {
-          hash: '1234567890abcdef',
-          message: 'Link commit through supported runtime',
-          diff: { shortstat: '1 file changed' },
-        },
-      }),
-    })
-
-    assert.equal(response.status, 200)
-    assert.equal((await response.json()).success, true)
-
-    const doc = server.store.getDoc()
-    const history = doc.taskHistory?.['task-123'] || []
-    const commitEntry = history.find(entry => entry.type === 'commit')
-    assert.ok(commitEntry)
-    assert.equal(commitEntry.agent, 'codex')
-    assert.equal(commitEntry.commit.hash, '1234567890abcdef')
-
-    const commitActivity = (doc.activity || []).find(
-      entry => entry.type === 'commit_linked' && entry.taskId === 'task-123'
-    )
-    assert.ok(commitActivity)
-    assert.equal(commitActivity.agent, 'codex')
+    const send = async (operationId, type, payload) => {
+      const response = await fetch(httpUrl(server, '/automerge/operations'), {
+        method: 'POST', headers: { Authorization: `Bearer ${TEST_TOKEN}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ operationId, actorId: 'builder', type, payload }),
+      })
+      assert.equal(response.status, 200)
+      const receipt = await response.json()
+      assert.equal(receipt.savedLocally, true)
+      return receipt
+    }
+    const created = await send('create-commit-task', 'task.create', { title: 'Task with evidence' })
+    const taskId = created.result.taskId
+    const commit = { hash: '1234567890abcdef', message: 'Link commit through supported runtime', diff: { shortstat: '1 file changed' } }
+    const receipt = await send('link-commit', 'task.link-commit', { taskId, commit })
+    const context = server.store.workspace.taskContext(taskId)
+    assert.deepEqual(context.evidence, [commit])
+    const event = context.history.find(event => event.operationId === receipt.operationId)
+    assert.equal(event.actorId, 'builder')
+    assert.equal(event.taskId, taskId)
   })
 })

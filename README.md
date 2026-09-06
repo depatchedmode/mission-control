@@ -1,4 +1,4 @@
-# Mission Control
+# Pardner
 
 Local-first task tracking and coordination for humans and agents, built on **Automerge CRDTs** (tasks, comments, mentions, activity, timeline / patchwork, and optional git commit attribution).
 
@@ -30,277 +30,117 @@ This section describes **product intent**. The **Current implementation** sectio
 
 ## Current implementation
 
-What ships in **this repository today** is a **hub-and-spoke** deployment: a **sync server** holds the Automerge document, applies mutations, and **broadcasts document snapshots** to connected WebSocket clients. The **CLI** and any **external agent harnesses** talk to that server over **HTTP** only (no offline CLI path).
+Pardner runs one local service per machine. Human and agent Actors use the same
+workspace and attributed operation API, through the browser or `pardner` CLI.
+Each service owns a persisted Automerge replica; a hub relays changes and owns a
+transactional SQLite delivery ledger. Actor identity is separate from replica
+identity, so the same Actor can work from more than one machine.
 
-**This topology is the current supported runtime. Peer-to-peer replica sync (with partitions and automatic merge between replicas) is a product goal—not yet implemented here.**
+Local operations are acknowledged only after a disk persistence barrier. Enrolled
+replicas reopen without the hub and reconnect using fresh WebSocket tickets.
+Different-field edits merge; same-field alternatives retain their authors and
+require explicit resolution. A synced indicator requires an explicit hub
+persistence acknowledgement covering the displayed document heads.
 
-```
-┌──────────────────────────────────────────────────────────────────────┐
-│                        MISSION CONTROL                                │
-│   Activity Feed · Task Board · Comments · Timeline · Patchwork       │
-└──────────────────────────────────────────────────────────────────────┘
-                                │
-                                ▼
-              ┌────────────────────────────────────┐
-              │        AUTOMERGE STORE             │
-              │  (CRDT: tasks, comments, activity) │
-              └────────────────────────────────────┘
-                                │
-              ┌─────────────────┼─────────────────┐
-              ▼                 ▼                 ▼
-        ┌─────────┐      ┌───────────┐     ┌──────────┐
-        │ mc CLI  │      │ Sync Srv  │     │ UI Dev   │
-        └─────────┘      └───────────┘     └──────────┘
-```
+The task board is served locally at `/pardner/`. It supports explicit Actor
+selection, full task context, revision-aware edits, atomic handoffs, comments,
+read receipts, conflict alternatives, history, and commit evidence. Credentials
+are entered at runtime and kept in browser-tab session storage. The browser owns
+no separate Automerge database.
 
-### Components
+Agent harnesses claim mentions through their local service, which forwards lease
+requests to the hub. They must durably receive a message before acknowledging it.
+New dispatch requires the hub; accepted work can continue and save locally while
+the hub is unavailable. Delivery leases are not task-execution locks, and external
+side effects still require harness-level idempotency.
 
-| Component | Location | Purpose |
-|-----------|----------|---------|
-| **mc CLI** | `bin/mc.js` | Primary interface for task management (HTTP client to sync server) |
-| **Automerge Store** | `lib/automerge-store.js` | Persistence + CRDT document logic (used by the sync server) |
-| **Sync Server** | `automerge-sync-server.js` | HTTP + WebSocket **hub** for the current deployment |
-| **UI Dev Client** | `ui-prototype/src/MissionControlSync.jsx` | Supported **development** UI client |
+## Quick start
 
-### Current supported runtime
+Use Node **24.11.1**. From this checkout:
 
-1. Start `automerge-sync-server.js` (HTTP + WebSocket).
-2. Point the CLI and any external agent harnesses at that server (`MC_SYNC_SERVER` or `MC_HTTP_PORT`).
-3. Run the UI through the Vite dev server proxy (`/mc-api` + `/mc-ws`).
-
-**Note:** Anything that bypasses the sync server—including **direct `AutomergeStore` access from CLI workflows**—is **not** a supported runtime path for the shipped CLI.
-
-## CLI Reference
-
-### Task Management
-```bash
-mc tasks [--status <s>] [--assignee <name>]   # List tasks
-mc show <task-id>                             # Show task details
-mc task create "title" [options]              # Create task
-   --priority <p0-p3>                         # Set priority
-   --assignee <name>                          # Assign to someone
-   --tag <tag>                                # Optional tag
-mc update <task-id> [options]                 # Update task
-   --status <s>                               # todo/in-progress/completed
-   --assignee <name>                          # Reassign
-   --title "text"                             # Rename
-   --description "text"                       # Body
-   --priority <p0-p3>                         # Priority
-   --agent <name>                             # Actor (defaults to MC_AGENT or "unknown")
-```
-
-### Comments & Activity
-```bash
-mc comment <task-id> "message"    # Add comment (use @name to mention)
-mc comments <task-id>             # List task comments
-mc comment-delete <comment-id>    # Delete a comment by ID
-mc mentions pending [--agent <name>] [--json]         # Pending @mentions
-mc mentions <agent>               # Same pool, filter by agent (positional)
-mc mentions claim <mention-id> [--json]               # Claim a mention lease
-mc mentions claim-next --agent <name> [--json]        # Claim the next mention
-mc mentions ack <mention-id> --claim-token <token>    # Mark delivered
-mc mentions release <mention-id> --claim-token <token> [--error <msg>] [--json]
-mc activity [--limit <n>]         # Activity feed
-mc agents list                    # List registered agents
-```
-
-### Patchwork Features
-```bash
-mc timeline [options]             # Rich timeline view
-   --agent <name>                 # Filter by actor
-   --task <id>                    # Filter by task
-   --limit <n>                    # Limit entries
-mc diff <task-id>                 # Show task changes over time
-mc branch <task-id> <name>        # Create experimental branch
-mc branches <task-id>             # List branches
-mc merge <branch-task-id>         # Merge branch task back into parent
-```
-
-### Agent Trace (Commit Attribution)
-```bash
-mc commit -m "message"            # Commit with agent attribution
-   --task <id>                    # Link to Mission Control task
-mc trace list [--limit <n>]       # List recent traced commits
-mc trace show <hash>              # Show trace details
-mc trace task <task-id>           # Commits linked to a task
-```
-
-See [docs/AGENT-TRACE.md](docs/AGENT-TRACE.md) for full documentation.
-
-## Mention Workflow
-
-Mission Control does not shell out to agent runtimes. External harnesses should poll and advance mention leases through `mc`.
-`mc mentions claim-next` is atomic on the server: each call selects and claims at most one lease for the requested agent.
-
-```bash
-# Get work for one agent
-mc mentions claim-next --agent gary --json
-
-# If delivery succeeds, acknowledge it
-mc mentions ack <mention-id> --claim-token <token> --json
-
-# If delivery fails, release it for retry
-mc mentions release <mention-id> --claim-token <token> --error "transport failed" --json
-```
-
-`MC_MENTION_CLAIM_TTL_MS` controls how long a claim stays hidden from other pollers before it becomes pending again.
-
-## Quick Start
-
-```bash
-# Install
-cd /path/to/mission-control
-npm install
-
-# Symlink for easy access
-ln -s $(pwd)/bin/mc.js ~/bin/mc
-
-# Start the sync server
-export MC_API_TOKEN="$(openssl rand -hex 32)"
-MC_API_TOKEN="$MC_API_TOKEN" npm run sync
-
-# Use the CLI with the same token
-MC_API_TOKEN="$MC_API_TOKEN" mc tasks
-
-# Create a task
-MC_API_TOKEN="$MC_API_TOKEN" mc task create "Fix the thing" --priority p1
-
-# Add a comment
-MC_API_TOKEN="$MC_API_TOKEN" mc comment <task-id> "Working on this now"
-
-# Check activity
-MC_API_TOKEN="$MC_API_TOKEN" mc activity --limit 10
-
-# Optional external harness flow
-MC_API_TOKEN="$MC_API_TOKEN" mc mentions claim-next --agent gary --json
-MC_API_TOKEN="$MC_API_TOKEN" mc mentions ack <mention-id> --claim-token <token> --json
-
-# Optional UI client
-VITE_MC_API_TOKEN="$MC_API_TOKEN" npm run dev --prefix ui-prototype
-```
-
-By default the sync server stores data under the **current working directory**. To pin a data root (for example a dedicated folder), set `MC_STORAGE_PATH` when starting the server and use the same layout described under **Data Storage** below.
-
-## Data Storage
-
-### Automerge Document
-Binary CRDT data lives under a `.mission-control/` directory.
-
-- **Default** (no `MC_STORAGE_PATH`): `./.mission-control/` in the directory from which you start the sync server, with the document handle in `./.mission-control-url`.
-- **With `MC_STORAGE_PATH` set:** `$MC_STORAGE_PATH/.mission-control/` for binary data, and `$MC_STORAGE_PATH/.mission-control/document-url` for the document handle (not `.mission-control-url` in the cwd).
-
-```javascript
-{
-  tasks: { [id]: Task },           // Task objects
-  comments: { [id]: Comment },     // Comment threads
-  mentions: { [id]: Mention },     // @mention tracking + lease metadata
-  agents: { [name]: Agent },       // Agent registry
-  activity: Activity[],            // Activity feed
-  taskHistory: { [id]: Change[] }  // Patchwork history
-}
-```
-
-### Sync
-See **Automerge Document** above for where the document URL file lives (`.mission-control-url` by default, or `document-url` under `.mission-control` when using `MC_STORAGE_PATH`). The sync server defaults to HTTP `8004` and WebSocket `8005` and can be configured with environment variables.
-
-#### Security Configuration
-The sync server requires an API token by default.
-
-```bash
-# Generate a token once per shell/session
-export MC_API_TOKEN="$(openssl rand -hex 32)"
-
-# Start server (binds to 127.0.0.1 by default)
-MC_API_TOKEN="$MC_API_TOKEN" npm run sync
-
-# Use the CLI or any harness wrapper with the same token
-MC_API_TOKEN="$MC_API_TOKEN" mc tasks
-```
-
-Optional environment settings:
-- `MC_ALLOWED_ORIGINS` (comma-separated CORS allowlist, defaults to localhost dev origins; wildcard `*` is not supported)
-- `MC_BIND_HOST` (default `127.0.0.1`)
-- `MC_HTTP_PORT` (default `8004`)
-- `MC_WS_PORT` (default `8005`)
-- `MC_SYNC_SERVER` (CLI/harness API base URL override, e.g. `http://127.0.0.1:9000`)
-- `MC_STORAGE_PATH` (optional directory; store uses `$MC_STORAGE_PATH/.mission-control` and nested `document-url` as above)
-- `MC_MENTION_CLAIM_TTL_MS` (optional lease length for mention delivery claims; default `30000`)
-- `MC_ALLOW_INSECURE_LOCAL=1` (disables auth; local testing only)
-
-For the Vite UI, set `VITE_MC_API_TOKEN` in `ui-prototype/.env.local`. The UI exchanges that token for a short-lived one-time WebSocket ticket via `/mc-api/automerge/ws-ticket`, so long-lived tokens are not placed in WS URLs.
-
-Optional compatibility setting:
-- `MC_ALLOW_LEGACY_WS_QUERY_TOKEN=1` (temporarily allow `?token=` WebSocket auth for old clients; disabled by default)
-
-Behavior notes:
-- Browser requests with an `Origin` header must match `MC_ALLOWED_ORIGINS`. Allowed preflight `OPTIONS` requests receive the same allowlisted CORS headers; disallowed origins are rejected with `403`.
-- Originless non-browser requests (for example CLI and harness traffic) are allowed and still require auth unless `MC_ALLOW_INSECURE_LOCAL=1` is set.
-- CLI commands and any harnesses that wrap them fail fast when the sync server is unreachable; they do not fall back to direct local-store access.
-- The sync server logs rejected auth/origin checks with a `[security]` prefix and keeps in-memory counters for HTTP and WebSocket rejections. Those counters are available on the server instance (used by integration tests and any embedder); they are **not** exposed as a public HTTP API.
-
-## Development
-
-### Testing
-```bash
-# Supported passing suites
-npm test
-
-# Opt-in roadmap/gap specs (may fail until the product catches up)
-npm run test:gaps
-
-# Install UI dependencies once, then verify the Vite build from repo root
-npm install --prefix ui-prototype
+```sh
+npm ci
+npm ci --prefix ui-prototype
 npm run ui:build
+node bin/pardner.js serve --data .pardner
 ```
 
-`GAP:`-prefixed suites under `test/` are reserved for intentionally failing roadmap/specification checks. They remain runnable through `npm run test:gaps`, but `npm test` excludes them by default.
+In another terminal, register human and agent Actors explicitly:
 
-### Sync Server
-Same as [Quick Start](#quick-start): `MC_API_TOKEN="$MC_API_TOKEN" npm run sync` (HTTP `8004`, WebSocket `8005` by default). Run from the repo root (or set `MC_STORAGE_PATH`) so `.mission-control` lands where you expect.
+```sh
+node bin/pardner.js actors register alice --handle alice --kind human --actor alice
+node bin/pardner.js actors register builder --handle builder --kind agent --actor alice
+node bin/pardner.js task create --title 'Coordinate our first task' --assignee builder --actor alice --operation-id first-task
+node bin/pardner.js tasks --assignee builder --json
+```
 
-## Implementation milestones (shipped)
+Open `http://127.0.0.1:8004/pardner/`, enter the token from
+`.pardner/connection.json`, and choose an Actor. The service generates that file
+with mode 0600. Install the package to expose `pardner` directly on PATH; `npm run
+sync` also starts the local service.
 
-### Phase 1: Core Infrastructure
-- Automerge CRDT storage (`lib/automerge-store.js`)
-- Task migration from beans (historical migration phase)
-- CLI with full task management (`bin/mc.js`)
-- Comments with @mentions
-- Activity feed and timeline
-- Agent registry
+For another machine, enroll a fresh replica with `pardner serve --role replica
+--hub URL --hub-ws URL --hub-token TOKEN`. The hub must be reachable for enrollment;
+its role, addresses, and credentials are then remembered locally. The hub defaults
+to loopback and must explicitly bind the intended interface for remote machines.
+See the [service and CLI guide](docs/PARDNER-CLI.md) for complete examples.
 
-### Phase 2: Real-Time Sync (current hub)
-- WebSocket sync server (`automerge-sync-server.js`)
-- Multi-session document sync over WebSockets
-- Conflict-free concurrent structured edits at the CRDT layer (server-side)
+## Coordination commands
 
-### Phase 3: Patchwork Features
-- Timeline view with rich context
-- Task history tracking
-- Branch/merge for task experimentation
-- Diff visualization
+| Task | Command |
+| --- | --- |
+| Agent work queue | `pardner tasks --assignee builder --json` |
+| Complete context | `pardner show TASK --actor builder --json` |
+| Attributed progress | `pardner comment TASK 'Progress and evidence' --actor builder` |
+| Atomic assignment/status/explanation | `pardner handoff TASK --to reviewer --status review --message TEXT --revisions JSON --actor builder` |
+| Resolve concurrent values | `pardner resolve TASK --field status --value review --revisions JSON --actor alice` |
+| Delivery | `pardner mentions claim-next --actor builder --request-id ID` |
+| Explicit observed reads | `pardner read TASK --receipts JSON --actor alice` |
+| Commit evidence | `pardner commit --task TASK --actor builder -- -m MESSAGE` |
 
-### Phase 4: UI Development Client
-- React dashboard dev client (`ui-prototype/`)
-- Task board with sync
-- Activity feed view
+Writes require an Actor and field edits require the revisions returned by `show`.
+Use the same operation ID and identical payload to retry an uncertain write.
+Coordination commands emit one JSON result on stdout; errors include stable codes
+and details, with diagnostics on stderr. Reads do not implicitly mark comments seen.
 
-**Also shipped:** Agent Trace (`mc commit` / `mc trace`) — see [docs/AGENT-TRACE.md](docs/AGENT-TRACE.md).
+## Validation and goal state
 
-## Future work (unprioritized)
+The measurable automated goal is a complete two-human/two-agent workflow across
+persisted replicas, under partitions, process kills, and acknowledgement loss,
+with no missing or duplicate acknowledged effects. The performance fixture has
+100 tasks, 400 comments, and 200 scripted updates. Required bounds are 2 seconds
+for local save/visibility, 5 seconds for offline opening, and 10 seconds for
+convergence. Completion requires 20 successful varied seeds and fresh-checkout
+verification, not just matching final replica states.
 
-Aligned with **Direction** above, plus practical polish:
+```sh
+npx playwright install chromium
+npm run verify
+npm run test:acceptance -- --repeat 20 --seed 1
+```
 
-- **Replica registry and identity**; **replica-aware** attribution in the document model
-- **Peer-to-peer replica sync** and **partition-tolerant** workflows (beyond hub-and-spoke)
-- **Presence** across replicas
-- **Capability-gated mutations** with **cryptographically bound** identity
-- **Richer co-editing** (staged after presence); likely layered on top of local-first state
-- Productionize UI deployment (repo ships a **development** client)
-- Broader `--json` output coverage beyond mention orchestration
-- Timestamp tracking for stale task detection
-- Backup / export
-- UI timeline visualization, diff viewer, branch management
-- Optional automation (digests, alerts)—out of core scope unless prioritized
+See the [acceptance contract](docs/PARDNER-ACCEPTANCE.md) for scenario details and
+artifact locations, and [implementation evidence](docs/PARDNER-EVIDENCE.md) for
+what has actually passed. The schema 2 milestone passed the 20-seed acceptance gate
+and fresh-checkout verification. Schema 3 review fixes passed `npm run verify`;
+see the separate qualification in the [milestone audit](docs/PARDNER-GOAL-AUDIT.md). The [two-machine real-agent rehearsal](docs/PARDNER-REHEARSAL.md)
+is prepared for separate human signoff; automated success does not claim it ran.
+
+## Storage and dependencies
+
+A version 3 directory contains workspace metadata, Automerge storage, an exclusive
+service lock, and local connection settings. The hub additionally holds the
+SQLite delivery ledger. Incompatible prior installs are rejected and preserved;
+choose a new directory rather than migrating or deleting existing data.
+
+Automerge **3.2.3** and Repo/network **2.5.1** are pinned. The persistence wrapper
+isolates the pinned Repo storage-subsystem integration and is qualified with fault
+injection and process-kill tests. These establish tested process-crash durability,
+not power-loss durability or arbitrary filesystem guarantees.
+
+Shared-secret admission currently grants flat workspace access. Federation,
+presence, capability-based authorization, browser-only persistence, rich text
+co-editing, and old-data migrations remain outside this milestone.
 
 ## History
 

@@ -3,22 +3,35 @@
 /**
  * Automerge Sync Server
  *
- * HTTP/WebSocket hub for the current Mission Control deployment.
+ * HTTP/WebSocket hub for the current Pardner deployment.
  * CLI, external harnesses, and UI clients talk to this process.
  */
 
 import { WebSocketServer } from 'ws'
-import { AutomergeStore } from './lib/automerge-store.js'
+import { WebSocketServerAdapter } from '@automerge/automerge-repo-network-websocket'
+import { WorkspaceRuntime } from './lib/workspace-runtime.js'
 import express from 'express'
 import crypto from 'crypto'
 import { createServer } from 'node:http'
 import { execSync } from 'node:child_process'
 import { fileURLToPath } from 'url'
+import { resolve } from 'node:path'
 import { findGitRoot, getTraceByCommit } from './lib/agent-trace.js'
 import { parseGithubRepo } from './lib/github-remote.js'
 
 const DEFAULT_HTTP_PORT = 8004
 const DEFAULT_WS_PORT = 8005
+
+/** WebSocket path for Automerge Repo native (CBOR) sync — distinct from JSON UI subscriptions. */
+const NATIVE_AUTOMERGE_WS_PATH = '/automerge'
+
+function wsUpgradePathname(req) {
+  try {
+    return new URL(req.url || '/', `http://${req.headers.host || 'localhost'}`).pathname
+  } catch {
+    return '/'
+  }
+}
 
 function defaultAllowedOrigins(httpPort) {
   return [
@@ -74,28 +87,27 @@ class AutomergeSyncServer {
   constructor(options = {}) {
     const env = options.env ?? process.env
     this.logger = options.logger ?? console
-    const storeOptions = {}
-    if (options.storagePath !== undefined) storeOptions.storagePath = options.storagePath
-    if (options.urlFile !== undefined) storeOptions.urlFile = options.urlFile
-    if (options.usePersistedUrl !== undefined) storeOptions.usePersistedUrl = options.usePersistedUrl
-    if (options.mentionClaimTtlMs !== undefined) storeOptions.mentionClaimTtlMs = options.mentionClaimTtlMs
-    storeOptions.env = env
-    if (options.logger !== undefined) storeOptions.logger = this.logger
-
-    this.store = options.store || new AutomergeStore(storeOptions)
+    this.store = options.store ?? new WorkspaceRuntime({
+      directory: options.directory ?? options.storagePath ?? resolve(env.PARDNER_DATA_DIR ?? '.pardner'),
+      role: options.role ?? env.PARDNER_ROLE ?? 'hub', actors: options.actors ?? [],
+      hubUrl: options.hubUrl ?? env.PARDNER_HUB_URL, hubWsUrl: options.hubWsUrl ?? env.PARDNER_HUB_WS_URL,
+      token: options.hubToken ?? env.PARDNER_HUB_TOKEN ?? options.apiToken ?? env.PARDNER_API_TOKEN,
+    })
     this.connectedClients = new Set()
     this.app = express()
-    this.wss = null
+    this.wssJson = null
+    this.nativeWsServer = null
+    this.automergeWsAdapter = null
     this.httpServer = null
     this.wsHttpServer = null
-    this.host = options.host ?? env.MC_BIND_HOST ?? '127.0.0.1'
-    this.httpPort = parsePort(options.httpPort ?? env.MC_HTTP_PORT ?? DEFAULT_HTTP_PORT, 'MC_HTTP_PORT')
-    this.wsPort = parsePort(options.wsPort ?? env.MC_WS_PORT ?? DEFAULT_WS_PORT, 'MC_WS_PORT')
-    this.apiToken = options.apiToken ?? env.MC_API_TOKEN ?? ''
-    this.allowInsecureLocal = options.allowInsecureLocal ?? env.MC_ALLOW_INSECURE_LOCAL === '1'
-    this.allowLegacyWsQueryToken = options.allowLegacyWsQueryToken ?? env.MC_ALLOW_LEGACY_WS_QUERY_TOKEN === '1'
+    this.host = options.host ?? env.PARDNER_BIND_HOST ?? '127.0.0.1'
+    this.httpPort = parsePort(options.httpPort ?? env.PARDNER_HTTP_PORT ?? DEFAULT_HTTP_PORT, 'PARDNER_HTTP_PORT')
+    this.wsPort = parsePort(options.wsPort ?? env.PARDNER_WS_PORT ?? DEFAULT_WS_PORT, 'PARDNER_WS_PORT')
+    this.apiToken = options.apiToken ?? env.PARDNER_API_TOKEN ?? ''
+    this.allowInsecureLocal = options.allowInsecureLocal ?? env.PARDNER_ALLOW_INSECURE_LOCAL === '1'
+    this.allowLegacyWsQueryToken = options.allowLegacyWsQueryToken ?? env.PARDNER_ALLOW_LEGACY_WS_QUERY_TOKEN === '1'
     this.wsTicketTtlMs = Number(
-      options.wsTicketTtlMs ?? env.MC_WS_TICKET_TTL_MS ?? 60000
+      options.wsTicketTtlMs ?? env.PARDNER_WS_TICKET_TTL_MS ?? 60000
     )
     this.wsTickets = new Map()
     this.securityCounters = {
@@ -104,31 +116,37 @@ class AutomergeSyncServer {
       wsUnauthorized: 0,
       wsOriginRejected: 0
     }
+    this.explicitOrigins = options.allowedOrigins !== undefined || env.PARDNER_ALLOWED_ORIGINS !== undefined
     this.allowedOrigins = parseAllowedOrigins(
-      options.allowedOrigins ?? env.MC_ALLOWED_ORIGINS ?? '',
+      options.allowedOrigins ?? env.PARDNER_ALLOWED_ORIGINS ?? '',
       defaultAllowedOrigins(this.httpPort)
     )
 
     if (!this.apiToken && !this.allowInsecureLocal) {
       throw new Error(
-        'MC_API_TOKEN is required. To bypass for local-only testing, set MC_ALLOW_INSECURE_LOCAL=1.'
+        'PARDNER_API_TOKEN is required. To bypass for local-only testing, set PARDNER_ALLOW_INSECURE_LOCAL=1.'
       )
     }
     if (this.allowedOrigins.has('*')) {
       throw new Error(
-        'MC_ALLOWED_ORIGINS must be an explicit comma-separated allowlist. Wildcard "*" is not supported.'
+        'PARDNER_ALLOWED_ORIGINS must be an explicit comma-separated allowlist. Wildcard "*" is not supported.'
       )
     }
     if (!Number.isInteger(this.wsTicketTtlMs) || this.wsTicketTtlMs <= 0) {
-      throw new Error(`Invalid MC_WS_TICKET_TTL_MS: ${env.MC_WS_TICKET_TTL_MS}`)
+      throw new Error(`Invalid PARDNER_WS_TICKET_TTL_MS: ${env.PARDNER_WS_TICKET_TTL_MS}`)
     }
   }
   
   async start() {
+    this.stopping = false
     this.logger.log?.('🚀 Starting Automerge Sync Server...')
     
     // Initialize backend store
     await this.store.init()
+    this.onDocumentChange = () => this.broadcastDocumentUpdate()
+    this.onRuntimeStatus = status => this.broadcastMessage({ type: 'sync-status', status })
+    this.store.docHandle.on('change', this.onDocumentChange)
+    this.store.on?.('status', this.onRuntimeStatus)
     this.logger.log?.('✅ Backend AutomergeStore initialized')
     
     // Setup Express for HTTP API
@@ -136,13 +154,17 @@ class AutomergeSyncServer {
     
     // Setup WebSocket for real-time sync
     this.setupWebSocketServer()
-    
+    this.store.repo.networkSubsystem.addNetworkAdapter(this.automergeWsAdapter)
+
     // Start HTTP server
     this.httpServer = await new Promise((resolve, reject) => {
       const server = this.app.listen(this.httpPort, this.host, () => resolve(server))
       server.once('error', reject)
     })
     this.httpPort = this.getBoundPort(this.httpServer, this.httpPort)
+    if (!this.explicitOrigins) {
+      for (const origin of defaultAllowedOrigins(this.httpPort)) this.allowedOrigins.add(origin)
+    }
 
     this.wsHttpServer = await new Promise((resolve, reject) => {
       const server = this.wsHttpServer.listen(this.wsPort, this.host, () => resolve(this.wsHttpServer))
@@ -158,7 +180,6 @@ class AutomergeSyncServer {
     )
     
     // Register default agents if not exists
-    await this.initializeDefaultAgents()
   }
 
   getBoundPort(server, fallbackPort) {
@@ -170,6 +191,13 @@ class AutomergeSyncServer {
   }
 
   async stop() {
+    this.stopping = true
+    // Stop both listeners before draining upgraded sockets and in-flight requests.
+    const listenersClosed = Promise.allSettled([
+      this.closeServer(this.wsHttpServer), this.closeServer(this.httpServer),
+    ])
+    if (this.onDocumentChange) this.store.docHandle?.off('change', this.onDocumentChange)
+    if (this.onRuntimeStatus) this.store.off?.('status', this.onRuntimeStatus)
     for (const client of this.connectedClients) {
       try {
         client.terminate()
@@ -179,17 +207,23 @@ class AutomergeSyncServer {
     }
     this.connectedClients.clear()
 
-    if (this.wss) {
-      await new Promise(resolve => this.wss.close(() => resolve()))
-      this.wss = null
+    if (this.wssJson) {
+      await new Promise(resolve => this.wssJson.close(() => resolve()))
+      this.wssJson = null
     }
+    if (this.nativeWsServer) {
+      for (const client of this.nativeWsServer.clients) client.terminate()
+      await new Promise(resolve => this.nativeWsServer.close(() => resolve()))
+      this.nativeWsServer = null
+    }
+    this.automergeWsAdapter = null
 
-    await this.closeServer(this.wsHttpServer)
-    await this.closeServer(this.httpServer)
+    const listenerResults = await listenersClosed
     this.wsHttpServer = null
     this.httpServer = null
 
     await this.store.close()
+    for (const result of listenerResults) if (result.status === 'rejected') throw result.reason
   }
 
   async closeServer(server) {
@@ -210,7 +244,7 @@ class AutomergeSyncServer {
   applyCorsHeaders(res, origin) {
     if (!origin) return
     res.setHeader('Access-Control-Allow-Origin', origin)
-    res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, X-MC-Token')
+    res.setHeader('Access-Control-Allow-Headers', 'Authorization, Content-Type, X-Pardner-Token')
     res.setHeader('Access-Control-Allow-Methods', 'GET,POST,PATCH,DELETE,OPTIONS')
     res.setHeader('Access-Control-Max-Age', '600')
     res.setHeader('Vary', appendHeaderValue(res.getHeader('Vary'), 'Origin'))
@@ -251,7 +285,7 @@ class AutomergeSyncServer {
     const bearerToken = getBearerToken(req.headers?.authorization || '')
     if (bearerToken) return bearerToken
 
-    const headerToken = req.headers?.['x-mc-token']
+    const headerToken = req.headers?.['x-pardner-token']
     if (headerToken) return String(headerToken)
 
     if (allowLegacyWsQueryToken && this.allowLegacyWsQueryToken) {
@@ -324,13 +358,28 @@ class AutomergeSyncServer {
       'httpUnauthorized',
       `Rejected unauthorized HTTP ${req.method} ${req.url}`
     )
-    return res.status(401).json({ error: 'Unauthorized' })
+    return res.status(401).json({ error: 'Unauthorized', code: 'AUTH_REQUIRED' })
   }
   
   setupHTTPAPI() {
     this.app.use((req, res, next) => this.originMiddleware(req, res, next))
     this.app.use(express.json())
+    this.app.get('/pardner/config', (_req, res) => res.json({
+      apiBase: '', wsPath: '/', wsPort: this.wsPort,
+    }))
+    this.app.use('/pardner', express.static(fileURLToPath(new URL('./ui-prototype/dist/', import.meta.url)), {
+      setHeaders: res => res.setHeader('Cache-Control', 'no-cache'),
+    }))
     this.app.use((req, res, next) => this.authMiddleware(req, res, next))
+    const commands = new Set(['/automerge/operations', '/automerge/sync-ack', '/automerge/ws-ticket',
+      '/automerge/deliveries/claim', '/automerge/deliveries/ack', '/automerge/deliveries/release'])
+    this.app.use((req, res, next) => {
+      const mutation = !['GET', 'HEAD', 'OPTIONS'].includes(req.method)
+      if (mutation && !commands.has(req.path)) {
+        return res.status(409).json({ code: 'OPERATION_REQUIRED', error: 'Use attributed Pardner operations for workspace changes' })
+      }
+      next()
+    })
     
     // Get current document state
     this.app.get('/automerge/doc', async (req, res) => {
@@ -346,112 +395,56 @@ class AutomergeSyncServer {
     this.app.get('/automerge/url', async (req, res) => {
       try {
         const url = this.store.docHandle?.url
-        res.json({ success: true, url })
-      } catch (error) {
-        res.status(500).json({ error: error.message })
-      }
-    })
-    
-    // Mark mention as delivered
-    this.app.post('/automerge/mentions/:id/deliver', async (req, res) => {
-      try {
-        const mentionId = req.params.id
-        const { claimToken } = req.body
-        if (!isNonEmptyString(claimToken)) {
-          return res.status(400).json({ error: 'claimToken is required' })
-        }
-
-        const result = await this.store.markMentionDelivered(mentionId, claimToken)
-        if (result.staleClaim) {
-          return res.status(409).json({ error: 'Claim token mismatch' })
-        }
-        if (result.delivered) {
-          this.broadcastDocumentUpdate()
-        }
-        res.json({ success: true, mentionId, delivered: result.delivered })
+        const doc = this.store.docHandle?.doc()
+        res.json({ success: true, url, schemaVersion: doc?.schemaVersion, workspaceId: doc?.workspaceId })
       } catch (error) {
         res.status(500).json({ error: error.message })
       }
     })
 
-    // Claim a mention before delivery so duplicate poll cycles do not re-send it.
-    this.app.post('/automerge/mentions/:id/claim', async (req, res) => {
+    const operationFailure = (res, error) => {
+      const statuses = { NOT_FOUND: 404, STALE_UPDATE: 409, OPERATION_ID_REUSED: 409,
+        CONFLICT_REQUIRES_RESOLUTION: 409, WORKSPACE_MISMATCH: 409, STORAGE_FAILED: 507,
+        LOCAL_SERVICE_UNAVAILABLE: 503, HUB_UNAVAILABLE: 503, HUB_REQUIRED: 409, STALE_CLAIM: 409, AUTH_REQUIRED: 401 }
+      res.status(statuses[error.code] ?? (error.code ? 400 : 500)).json({
+        success: false, error: error.message, code: error.code ?? 'INTERNAL_ERROR', details: error.details ?? null,
+      })
+    }
+
+    this.app.post('/automerge/operations', async (req, res) => {
       try {
-        const mentionId = req.params.id
-        const result = await this.store.claimMentionDelivery(mentionId)
-        if (result.claimed) {
-          this.broadcastDocumentUpdate()
-        }
-        res.json({ success: true, mentionId, ...result })
-      } catch (error) {
-        res.status(500).json({ error: error.message })
-      }
+        res.json({ success: true, ...await this.store.execute(req.body) })
+      } catch (error) { operationFailure(res, error) }
     })
 
-    // Atomically claim the next pending mention for one agent.
-    this.app.post('/automerge/mentions/claim-next', async (req, res) => {
-      try {
-        const { agent } = req.body ?? {}
-        if (!isNonEmptyString(agent)) {
-          return res.status(400).json({ error: 'agent is required' })
-        }
-
-        const result = await this.store.claimNextMentionDelivery(agent)
-        if (result.claimed) {
-          this.broadcastDocumentUpdate()
-        }
-        res.json({ success: true, ...result })
-      } catch (error) {
-        res.status(500).json({ error: error.message })
-      }
+    this.app.get('/automerge/status', (req, res) => {
+      res.json(this.store.status())
     })
 
-    // Release a failed delivery attempt so the mention becomes pending again.
-    this.app.post('/automerge/mentions/:id/release', async (req, res) => {
+    this.app.get('/automerge/deliveries', async (req, res) => {
       try {
-        const mentionId = req.params.id
-        const { claimToken, error: releaseError } = req.body
-        if (!isNonEmptyString(claimToken)) {
-          return res.status(400).json({ error: 'claimToken is required' })
-        }
+        res.json(await this.store.pendingDeliveries(req.query.actor))
+      } catch (error) { operationFailure(res, error) }
+    })
 
-        const result = await this.store.releaseMentionDelivery(mentionId, claimToken, releaseError)
-        if (result.staleClaim) {
-          return res.status(409).json({ error: 'Claim token mismatch' })
-        }
-        if (result.released) {
-          this.broadcastDocumentUpdate()
-        }
-        res.json({ success: true, mentionId, released: result.released })
-      } catch (error) {
-        res.status(500).json({ error: error.message })
-      }
-    })
-    
-    // Get pending mentions
-    this.app.get('/automerge/mentions/pending', async (req, res) => {
+    for (const [action, method] of [['claim', 'claimDelivery'], ['ack', 'acknowledgeDelivery'], ['release', 'releaseDelivery']]) {
+      this.app.post(`/automerge/deliveries/${action}`, async (req, res) => {
+        try {
+          res.json(await this.store[method](req.body))
+        } catch (error) { operationFailure(res, error) }
+      })
+    }
+
+    this.app.get('/automerge/task/:taskId/context', (req, res) => {
       try {
-        const agent = req.query.agent
-        const mentions = await this.store.getPendingMentions(agent)
-        res.json({ success: true, mentions })
-      } catch (error) {
-        res.status(500).json({ error: error.message })
-      }
+        res.json({ ...this.store.workspace.taskContext(req.params.taskId, req.query.actor), status: this.store.status() })
+      } catch (error) { operationFailure(res, error) }
     })
-    
-    // Add comment (from CLI or other sources)
-    this.app.post('/automerge/comment', async (req, res) => {
+
+    this.app.post('/automerge/sync-ack', async (req, res) => {
       try {
-        const { taskId, text, agent } = req.body
-        const commentId = await this.store.addComment(taskId, text, agent)
-        
-        // Broadcast update
-        this.broadcastDocumentUpdate()
-        
-        res.json({ success: true, commentId })
-      } catch (error) {
-        res.status(500).json({ error: error.message })
-      }
+        res.json(await this.store.acknowledge(req.body?.workspaceId, req.body?.heads))
+      } catch (error) { operationFailure(res, error) }
     })
 
     this.app.post('/automerge/ws-ticket', async (req, res) => {
@@ -464,68 +457,6 @@ class AutomergeSyncServer {
       }
     })
 
-    // Update comment (e.g., fix attribution)
-    this.app.patch('/automerge/comment/:commentId', async (req, res) => {
-      try {
-        const { commentId } = req.params
-        const updates = req.body
-        
-        const doc = this.store.getDoc()
-        if (!doc.comments?.[commentId]) {
-          return res.status(404).json({ error: 'Comment not found' })
-        }
-        
-        await this.store.docHandle.change(doc => {
-          const comment = doc.comments[commentId]
-          if (updates.agent) comment.agent = updates.agent
-          if (updates.content) comment.content = updates.content
-        })
-        
-        this.broadcastDocumentUpdate()
-        res.json({ success: true, commentId })
-      } catch (error) {
-        res.status(500).json({ error: error.message })
-      }
-    })
-    
-    // Delete comment
-    this.app.delete('/automerge/comment/:commentId', async (req, res) => {
-      try {
-        const { commentId } = req.params
-        
-        const doc = this.store.getDoc()
-        if (!doc.comments?.[commentId]) {
-          return res.status(404).json({ error: 'Comment not found' })
-        }
-        
-        // Find mentions that reference this comment
-        const mentionsToDelete = Object.entries(doc.mentions || {})
-          .filter(([_, mention]) => mention.comment_id === commentId)
-          .map(([mentionId]) => mentionId)
-        
-        await this.store.docHandle.change(doc => {
-          // Delete the comment
-          delete doc.comments[commentId]
-          
-          // Delete associated mentions
-          if (doc.mentions) {
-            mentionsToDelete.forEach(mentionId => {
-              delete doc.mentions[mentionId]
-            })
-          }
-        })
-        
-        this.broadcastDocumentUpdate()
-        res.json({ 
-          success: true, 
-          commentId,
-          mentionsDeleted: mentionsToDelete.length 
-        })
-      } catch (error) {
-        res.status(500).json({ error: error.message })
-      }
-    })
-    
     // Get agent trace for a specific commit
     this.app.get('/automerge/trace/:commitHash', async (req, res) => {
       try {
@@ -599,203 +530,14 @@ class AutomergeSyncServer {
       }
     })
     
-    // Update last-seen timestamp for a task (read/unread helper - global lastSeen map in this prototype)
-    this.app.post('/automerge/last-seen', async (req, res) => {
-      try {
-        const { taskId, timestamp } = req.body
-        if (!taskId) {
-          return res.status(400).json({ error: 'taskId is required' })
-        }
-        
-        const ts = timestamp || new Date().toISOString()
-        
-        await this.store.docHandle.change(doc => {
-          if (!doc.lastSeen) doc.lastSeen = {}
-          doc.lastSeen[taskId] = ts
-        })
-        
-        this.broadcastDocumentUpdate()
-        res.json({ success: true, taskId, timestamp: ts })
-      } catch (error) {
-        res.status(500).json({ error: error.message })
-      }
-    })
-
-    // Register agent
-    this.app.post('/automerge/agent', async (req, res) => {
-      try {
-        const { name, role } = req.body ?? {}
-        if (!isNonEmptyString(name)) {
-          return res.status(400).json({ error: 'name is required' })
-        }
-
-        await this.store.registerAgent(name.trim(), role || 'Agent')
-        this.broadcastDocumentUpdate()
-        
-        res.json({ success: true, name: name.trim() })
-      } catch (error) {
-        res.status(500).json({ error: error.message })
-      }
-    })
-    
-    // Create task (from CLI or other sources)
-    this.app.post('/automerge/task', async (req, res) => {
-      try {
-        const { title, description, priority, assignee, tags, status, agent } = req.body
-        if (!title) {
-          return res.status(400).json({ error: 'Title is required' })
-        }
-        
-        const taskId = 'task-' + Math.random().toString(36).substr(2, 9)
-        await this.store.docHandle.change(doc => {
-          if (!doc.tasks) doc.tasks = {}
-          doc.tasks[taskId] = {
-            id: taskId,
-            title,
-            description: description || '',
-            priority: priority || 'p2',
-            assignee: assignee || null,
-            tags: tags || [],
-            status: status || 'todo',
-            type: 'task',
-            order: Date.now(),
-            created_at: new Date().toISOString(),
-            updated_at: new Date().toISOString()
-          }
-          
-          if (!doc.activity) doc.activity = []
-          doc.activity.push({
-            id: Math.random().toString(16).slice(2),
-            type: 'task_created',
-            agent: agent || 'api',
-            taskId,
-            timestamp: new Date().toISOString()
-          })
-        })
-        
-        // Broadcast update
-        this.broadcastDocumentUpdate()
-        
-        res.json({ success: true, taskId })
-      } catch (error) {
-        res.status(500).json({ error: error.message })
-      }
-    })
-    
-    // Update task (from CLI or other sources)
-    this.app.patch('/automerge/task/:taskId', async (req, res) => {
-      try {
-        const { taskId } = req.params
-        const { status, assignee, title, description, priority, agent } = req.body
-
-        const updates = {}
-        if (status !== undefined) updates.status = status
-        if (assignee !== undefined) updates.assignee = assignee || null
-        if (title !== undefined) updates.title = title
-        if (description !== undefined) updates.description = description
-        if (priority !== undefined) updates.priority = priority
-
-        const result = await this.store.updateTask(taskId, updates, agent || 'api')
-        if (!result.success) {
-          if (result.error === 'Task not found') {
-            return res.status(404).json({ error: `Task ${taskId} not found` })
-          }
-          return res.status(500).json({ error: result.error || 'Task update failed' })
-        }
-
-        if (result.changes.length > 0) {
-          this.broadcastDocumentUpdate()
-        }
-        res.json({ success: true, taskId, changes: result.changes })
-      } catch (error) {
-        res.status(500).json({ error: error.message })
-      }
-    })
-    
-    // ─── Patchwork: Task History ───
-    this.app.get('/automerge/task/:taskId/history', async (req, res) => {
-      try {
-        const { taskId } = req.params
-        const history = await this.store.getTaskHistory(taskId)
-        res.json({ history })
-      } catch (error) {
-        res.status(500).json({ error: error.message })
-      }
-    })
-
-    // ─── Patchwork: Link Commit ───
-    this.app.post('/automerge/task/:taskId/commit', async (req, res) => {
-      try {
-        const { taskId } = req.params
-        const { commit, agent } = req.body
-        const doc = this.store.getDoc()
-
-        if (!commit?.hash || !commit?.message) {
-          return res.status(400).json({ error: 'commit.hash and commit.message are required' })
-        }
-        if (!doc.tasks?.[taskId]) {
-          return res.status(404).json({ error: `Task ${taskId} not found` })
-        }
-
-        await this.store.recordCommit(taskId, commit, agent || 'api')
-        this.broadcastDocumentUpdate()
-        res.json({ success: true, taskId, commitHash: commit.hash })
-      } catch (error) {
-        res.status(500).json({ error: error.message })
-      }
-    })
-
-    // ─── Patchwork: Create Branch ───
-    this.app.post('/automerge/task/:taskId/branch', async (req, res) => {
-      try {
-        const { taskId } = req.params
-        const { branchName, agent } = req.body
-        if (!branchName) {
-          return res.status(400).json({ error: 'branchName required' })
-        }
-        const branchId = await this.store.createBranch(taskId, branchName, agent || 'api')
-        if (!branchId) {
-          return res.status(404).json({ error: `Task ${taskId} not found` })
-        }
-        this.broadcastDocumentUpdate()
-        res.json({ success: true, branchId, parentId: taskId, branchName })
-      } catch (error) {
-        res.status(500).json({ error: error.message })
-      }
-    })
-
-    // ─── Patchwork: List Branches ───
-    this.app.get('/automerge/task/:taskId/branches', async (req, res) => {
-      try {
-        const { taskId } = req.params
-        const branches = await this.store.getBranches(taskId)
-        res.json({ branches })
-      } catch (error) {
-        res.status(500).json({ error: error.message })
-      }
-    })
-
-    // ─── Patchwork: Merge Branch ───
-    this.app.post('/automerge/branch/:branchId/merge', async (req, res) => {
-      try {
-        const { branchId } = req.params
-        const { agent } = req.body
-        const result = await this.store.mergeBranch(branchId, agent || 'api')
-        if (!result.success) {
-          return res.status(400).json({ error: result.error })
-        }
-        this.broadcastDocumentUpdate()
-        res.json(result)
-      } catch (error) {
-        res.status(500).json({ error: error.message })
-      }
-    })
-
     this.logger.log?.('🌐 HTTP API routes configured')
   }
   
   setupWebSocketServer() {
-    this.wss = new WebSocketServer({ noServer: true })
+    this.wssJson = new WebSocketServer({ noServer: true })
+    this.nativeWsServer = new WebSocketServer({ noServer: true })
+    this.automergeWsAdapter = new WebSocketServerAdapter(this.nativeWsServer)
+
     this.wsHttpServer = createServer((req, res) => {
       const origin = req.headers.origin
 
@@ -818,6 +560,10 @@ class AutomergeSyncServer {
 
     this.wsHttpServer.on('upgrade', (req, socket, head) => {
       socket.on('error', () => {})
+      if (this.stopping) {
+        this.rejectWebSocketUpgrade(socket, 503, 'Service Unavailable', { error: 'The service is stopping' })
+        return
+      }
       this.cleanupExpiredWsTickets()
 
       const origin = req.headers.origin
@@ -839,22 +585,24 @@ class AutomergeSyncServer {
         return
       }
 
-      this.wss.handleUpgrade(req, socket, head, ws => {
-        this.wss.emit('connection', ws, req)
+      const pathname = wsUpgradePathname(req)
+      const target = pathname === NATIVE_AUTOMERGE_WS_PATH ? this.nativeWsServer : this.wssJson
+      target.handleUpgrade(req, socket, head, ws => {
+        target.emit('connection', ws, req)
       })
     })
-    
-    this.wss.on('connection', (ws, req) => {
-      this.logger.log?.('🔌 Frontend client connected')
+
+    this.wssJson.on('connection', (ws, req) => {
+      this.logger.log?.('🔌 UI subscriber connected')
       this.connectedClients.add(ws)
-      
-      // Send current document state immediately
+
       const doc = this.store.getDoc()
       ws.send(JSON.stringify({
         type: 'document-state',
-        doc: doc
+        doc: doc,
+        status: this.store.status()
       }))
-      
+
       ws.on('message', async (message) => {
         try {
           const data = JSON.parse(message.toString())
@@ -867,14 +615,14 @@ class AutomergeSyncServer {
           }))
         }
       })
-      
+
       ws.on('close', () => {
         this.logger.log?.('🔌 Frontend client disconnected')
         this.connectedClients.delete(ws)
       })
     })
-    
-    this.logger.log?.('🔄 WebSocket server configured')
+
+    this.logger.log?.('🔄 WebSocket: UI subscriptions on / ; native Automerge Repo on ' + NATIVE_AUTOMERGE_WS_PATH)
   }
 
   rejectWebSocketUpgrade(socket, statusCode, statusText, payload) {
@@ -891,121 +639,38 @@ class AutomergeSyncServer {
   }
   
   async handleClientMessage(ws, data) {
-    switch (data.type) {
-      case 'document-change':
-        this.logger.log?.('🔄 Applying frontend change:', data.change?.type)
-        
-        if (!data.change) break
-        
-        // Handle task update
-        if (data.change.type === 'task-update') {
-          await this.store.docHandle.change(doc => {
-            const { taskId, updates } = data.change
-            if (doc.tasks[taskId]) {
-              Object.assign(doc.tasks[taskId], updates)
-              doc.tasks[taskId].updated_at = new Date().toISOString()
-              
-              if (!doc.activity) doc.activity = []
-              doc.activity.push({
-                id: Math.random().toString(16).slice(2),
-                type: 'task_updated',
-                agent: data.agent || 'ui',
-                taskId,
-                changes: updates,
-                timestamp: new Date().toISOString()
-              })
-            }
-          })
-          this.broadcastDocumentUpdate(ws)
-        }
-        
-        // Handle task create
-        if (data.change.type === 'task-create') {
-          await this.store.docHandle.change(doc => {
-            const { task } = data.change
-            if (!doc.tasks) doc.tasks = {}
-            doc.tasks[task.id] = {
-              ...task,
-              created_at: task.created_at || new Date().toISOString(),
-              updated_at: new Date().toISOString()
-            }
-            
-            if (!doc.activity) doc.activity = []
-            doc.activity.push({
-              id: Math.random().toString(16).slice(2),
-              type: 'task_created',
-              agent: data.agent || 'ui',
-              taskId: task.id,
-              timestamp: new Date().toISOString()
-            })
-          })
-          this.logger.log?.('✅ Task created:', data.change.task.id)
-          this.broadcastDocumentUpdate(ws)
-        }
-        
-        // Handle comment add
-        if (data.change.type === 'comment-add') {
-          const { taskId, comment } = data.change
-          await this.store.addComment(taskId, comment.text, comment.agent)
-          this.logger.log?.('✅ Comment added to task:', taskId)
-          // Don't exclude sender - UI doesn't do optimistic updates for comments
-          this.broadcastDocumentUpdate(null)
-        }
-        break
-        
-      case 'ping':
-        ws.send(JSON.stringify({ type: 'pong' }))
-        break
-        
-      default:
-        this.logger.log?.('⚠️ Unknown message type:', data.type)
+    if (data.type === 'document-change') {
+      ws.send(JSON.stringify({ type: 'error', code: 'HTTP_MUTATION_REQUIRED', error: 'Submit attributed operations through the HTTP API' }))
+    } else if (data.type === 'ping') {
+      ws.send(JSON.stringify({ type: 'pong' }))
+    } else {
+      this.logger.log?.('Unknown UI message type:', data.type)
     }
   }
   
-  broadcastDocumentUpdate(excludeClient = null) {
-    const doc = this.store.getDoc()
-    const message = JSON.stringify({
-      type: 'document-update',
-      doc: doc,
-      timestamp: new Date().toISOString()
-    })
-    
-    this.connectedClients.forEach(client => {
-      if (client !== excludeClient && client.readyState === client.OPEN) {
-        client.send(message)
-      }
+  broadcastDocumentUpdate() {
+    this.broadcastMessage({
+      type: 'document-update', doc: this.store.getDoc(),
+      status: this.store.status(), timestamp: new Date().toISOString(),
     })
   }
-  
-  async initializeDefaultAgents() {
-    try {
-      // Check if agents already exist
-      const existingAgents = await this.store.getAgents()
-      if (existingAgents.length > 0) {
-        this.logger.log?.(`✅ ${existingAgents.length} agents already registered`)
-        return
-      }
-      
-      // Register default agents
-      await this.store.registerAgent('gary', 'Lead')
-      await this.store.registerAgent('friday', 'Developer')
-      await this.store.registerAgent('writer', 'Content Writer')
-      
-      this.logger.log?.('✅ Default agents registered')
-    } catch (error) {
-      this.logger.error?.('❌ Failed to initialize agents:', error)
+
+  broadcastMessage(payload) {
+    const message = JSON.stringify(payload)
+    for (const client of this.connectedClients) {
+      if (client.readyState === client.OPEN) client.send(message)
     }
   }
+
+
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {
-  const server = new AutomergeSyncServer()
-  server.start().catch(error => {
-    if (server.logger?.error) {
-      server.logger.error(error)
-      return
-    }
-    console.error(error)
+  import('./lib/local-service.js').then(({ startLocalService }) =>
+    startLocalService({ directory: resolve(process.env.PARDNER_DATA_DIR ?? '.pardner') })
+  ).then(result => console.log(JSON.stringify(result))).catch(error => {
+    console.error(error.message)
+    process.exitCode = 1
   })
 }
 
