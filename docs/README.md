@@ -1,6 +1,8 @@
 # Pardner documentation
 
 - [CLI and Actor workflows](PARDNER-CLI.md)
+- [Event-driven agent bridge](PARDNER-BRIDGE.md)
+- [Real-agent bridge rehearsal](PARDNER-BRIDGE-REHEARSAL.md)
 - [Acceptance criteria](PARDNER-ACCEPTANCE.md)
 - [Milestone audit](PARDNER-GOAL-AUDIT.md)
 - [Implementation evidence](PARDNER-EVIDENCE.md)
