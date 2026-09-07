@@ -159,6 +159,12 @@ preserved. The main checkout is never moved. No commits, branches, or files are
 deleted. `bridge status` includes the retirement record and source/destination
 paths; failed archive operations retry from that record after restart.
 
+Before each remaining thread archive or worktree move, cleanup rereads task and
+branch status and pending deliveries. Reopened work pauses the remaining steps,
+including during a single cleanup attempt. The durable record preserves progress
+for retry once the group is eligible again. A request already in flight may
+finish; these checkpoints do not lock task edits across Codex and Git operations.
+
 Cleanup requires the bridge, Pardner service, and Codex server to be running.
 Rehearsal configurations enable it, but a test returning to human review does
 not complete its tasks. Reopening tasks after retirement requires explicitly

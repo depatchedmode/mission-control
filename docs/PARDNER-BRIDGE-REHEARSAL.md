@@ -264,3 +264,16 @@ result does not qualify a bridge-driven remote Luna handoff. VMs also share the
 Mac's physical hardware and uplink. A real human approval round trip,
 Desktop-owned sessions, and the unimplemented Claude/Cursor adapters remain
 unqualified.
+
+The subsequent merge-readiness fix rechecks task and branch status and pending
+deliveries before each remaining archive or move. Six new regressions fail
+against the prior implementation and pass with the fix, covering reopening
+after either thread archive, an added open branch, a new pending delivery,
+stopping during an archive, and reopening between worktree moves. The focused
+suite passed 24 tests; `npm run verify` passed the build, all 219 tests, and the
+complete seed-1 acceptance scenario.
+
+Real Luna/low run `64a2205b-df19-4ca2-8992-c1e838036d1f` passed after that fix,
+including lost-dispatch-reply recovery and the completion/archive lifecycle.
+It recorded a 230 ms initial dispatch, four dispatches, two archive requests,
+preserved worktrees, and no cleanup errors. This run did not repeat the idle hour.

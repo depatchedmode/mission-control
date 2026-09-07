@@ -18,6 +18,7 @@ async function fixture(run) {
     isArchived: async mapping => state.archived.includes(mapping.threadId),
     archive: async mapping => {
       if (!state.archived.includes(mapping.threadId)) state.archived.push(mapping.threadId)
+      await state.afterArchive?.(mapping)
       if (state.loseReply) { state.loseReply = false; throw new Error('reply lost') }
     },
   }
@@ -28,7 +29,11 @@ async function fixture(run) {
   }
   const dependencies = {
     plan: async source => { state.plans.push(source); return { source, destination: '/archive/fixture' } },
-    move: async plan => { if (state.failMove) throw new Error('disk unavailable'); state.moved.push(plan.source) },
+    move: async plan => {
+      if (state.failMove) throw new Error('disk unavailable')
+      if (!state.moved.includes(plan.source)) state.moved.push(plan.source)
+      await state.afterMove?.(plan)
+    },
   }
   state.tick = () => retireCompletedBridge(bridge, dependencies)
   state.inbox = inbox
@@ -98,6 +103,63 @@ it('reopening a task pauses partial retirement and never reactivates an archived
   await state.tick()
   assert.deepEqual(state.inbox.retirement(), completed)
   assert.equal(state.moved.length, 1)
+}))
+
+for (const actor of ['builder', 'reviewer']) {
+  it(`pauses immediately when a task reopens after archiving ${actor}`, () => fixture(async state => {
+    state.afterArchive = mapping => { if (mapping.actorId === actor) state.tasks.two = 'in-progress' }
+    await state.tick()
+    assert.deepEqual(state.archived, actor === 'builder' ? ['builder'] : ['builder', 'reviewer'])
+    assert.deepEqual(state.moved, [])
+    assert.equal(state.inbox.retirement().state, 'archiving')
+    state.afterArchive = null
+    state.tasks.two = 'completed'
+    await state.tick()
+    assert.deepEqual(state.archived, ['builder', 'reviewer'])
+    assert.deepEqual(state.moved, ['/shared-fixture'])
+    assert.equal(state.inbox.retirement().state, 'archived')
+  }))
+}
+
+it('discovers an open branch added during archival before continuing', () => fixture(async state => {
+  state.afterArchive = () => {
+    state.branches = { child: { id: 'child', branch: { parentId: 'one' } } }
+    state.tasks.child = 'review'
+  }
+  await state.tick()
+  assert.deepEqual(state.archived, ['builder'])
+  assert.deepEqual(state.moved, [])
+  state.afterArchive = null
+  state.tasks.child = 'completed'
+  await state.tick()
+  assert.ok(state.inbox.retirement().taskIds.includes('child'))
+  assert.equal(state.inbox.retirement().state, 'archived')
+}))
+
+for (const change of ['pending delivery', 'stop']) {
+  it(`pauses archival when ${change} arrives during the first archive`, () => fixture(async state => {
+    state.afterArchive = () => {
+      if (change === 'stop') state.bridge.stopped = true
+      else state.pending = [{}]
+    }
+    await state.tick()
+    assert.deepEqual(state.archived, ['builder'])
+    assert.deepEqual(state.moved, [])
+    assert.equal(state.inbox.retirement().state, 'archiving')
+  }))
+}
+
+it('pauses between worktree moves and resumes without repeating a completed move', () => fixture(async state => {
+  state.bridge.config.mappings[1].worktree = '/reviewer-fixture'
+  state.afterMove = () => { state.tasks.one = 'in-progress' }
+  await state.tick()
+  assert.deepEqual(state.moved, ['/shared-fixture'])
+  assert.equal(state.inbox.retirement().state, 'archiving')
+  state.afterMove = null
+  state.tasks.one = 'completed'
+  await state.tick()
+  assert.deepEqual(state.moved, ['/shared-fixture', '/reviewer-fixture'])
+  assert.equal(state.inbox.retirement().state, 'archived')
 }))
 
 it('moving a real dirty worktree preserves tracked, untracked, and ignored files and tolerates retry', async () => {
