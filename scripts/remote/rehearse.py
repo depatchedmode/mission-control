@@ -298,6 +298,7 @@ class Rehearsal:
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--hold', action='store_true', help='Keep services alive for real agents after infrastructure checks')
+    parser.add_argument('--infrastructure-only', action='store_true', help='Run replica qualification without creating a manual Claude task')
     args = parser.parse_args()
     rehearsal = Rehearsal()
     rehearsal.log(f'Run directory: {rehearsal.output}')
@@ -306,10 +307,14 @@ def main():
         rehearsal.prepare()
         rehearsal.start_hub()
         rehearsal.exercise()
-        rehearsal.prepare_agents()
+        if args.infrastructure_only:
+            rehearsal.evidence['realAgents'] = 'not-run'
+        else:
+            rehearsal.prepare_agents()
         write_json(rehearsal.output / 'result.json', rehearsal.evidence)
         write_json(rehearsal.output / 'timings.json', rehearsal.measurements)
-        rehearsal.log('Infrastructure PASS. Real-agent task ready; see CLAUDE.md.')
+        rehearsal.log('Infrastructure PASS. Real agents not run.' if args.infrastructure_only
+                      else 'Infrastructure PASS. Real-agent task ready; see CLAUDE.md.')
         if args.hold:
             rehearsal.log('Keeping test services alive. Ctrl-C stops services, preserving VM disks and evidence.')
             while True:
