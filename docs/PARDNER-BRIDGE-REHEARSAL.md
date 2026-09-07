@@ -29,6 +29,16 @@ node scripts/bridge-real-rehearsal.js --run --idle-seconds 3600
 node scripts/bridge-real-rehearsal.js --run \
   --codex /Applications/ChatGPT.app/Contents/Resources/codex \
   --model gpt-5.6-luna --reasoning-effort low --completion-lifecycle
+
+# Exercise two Actors sharing one linked worktree, with independent test files
+node scripts/bridge-real-rehearsal.js --run \
+  --codex /Applications/ChatGPT.app/Contents/Resources/codex \
+  --model gpt-5.6-luna --reasoning-effort low \
+  --shared-worktree --drop-dispatch-reply --completion-lifecycle
+
+# Observe a real approval boundary without answering the request
+node scripts/bridge-approval-rehearsal.js --run \
+  --codex /Applications/ChatGPT.app/Contents/Resources/codex
 ```
 
 Without `--run`, the script prints usage and makes no model requests. Each run
@@ -52,6 +62,20 @@ bridge before restarting it against the durable retirement record. The test
 compares all fixture file hashes and Git status before and after worktree moves,
 reruns tests from the archived locations, and restarts again after the moves.
 The archived threads and worktrees belong only to that isolated rehearsal.
+
+`--shared-worktree` assigns both sessions to the same linked Git worktree. The
+reviewer checks the shared implementation against the attributed handoff and
+writes `reviewer.test.mjs`, preserving the builder's implementation and tests.
+The controller reruns both test suites and independent assertions. Completion
+must archive two threads but move the shared worktree only once.
+
+The separate approval probe uses Luna with low reasoning in a new read-only
+session, with approvals explicitly routed to the user. It requests one bounded
+fixture write, observes the actual App Server approval request, and verifies for
+five seconds that the bridge exposes a blocked state, keeps a second delivery
+queued, and never writes the fixture. It then stops the bridge, interrupts the
+pending turn, closes the cancelled fixture tasks, and archives the thread. It
+never answers an approval request and does not qualify a human approval UI.
 
 The fixed `runId` and `challenge` are now explicit in every coding-task handoff
 instruction, separate from per-write operation IDs. Validation still requires
@@ -161,3 +185,82 @@ The subsequent review pass completed `npm run verify`: production UI build,
 18-test focused run. An earlier acceptance attempt was discarded because a
 test edit changed its candidate fingerprint during execution; the successful
 rerun used unchanged source throughout acceptance.
+
+## Qualification follow-up
+
+| Gate | Evidence and scope |
+| --- | --- |
+| Healthy dispatch under two seconds | Real Luna/low: 229 ms with separate worktrees; 217 ms with a shared worktree. |
+| Busy delivery, duplicate notifications, uncertain dispatch | Real lost-reply and bridge-restart runs passed in both local topologies. |
+| Completion and restart during archival | Both local topologies passed; shared worktree moved once for two archived threads. |
+| Permission boundary and visible blocked state | Real pending approval passed; no request was approved. Human approval round trip remains open. |
+| Remote partition, conflict, replay, restart | Two isolated VM replicas passed infrastructure checks. Remote Luna sessions require guest authentication. |
+| One-hour idle observation | 3,600 real seconds passed with zero bridge model dispatches, followed by successful completion and archive recovery. |
+
+These are scoped observations, not universal exactly-once guarantees or a model
+reliability estimate. The complete three-topology agent gate remains open until
+real remote sessions are exercised against their own replicas.
+
+Run `badd691a-c34f-4240-a468-2428257a8607` passed the complete idle hour with
+Luna/low against candidate
+`8b20dc85dd96eed99325dd2f4dd515c979705f76d8d60c054e139e15cb982e37`.
+It observed zero bridge `turn/start` calls during 3,600 real idle seconds.
+Protocol timestamps place the subsequent completion probe 3,607.154 seconds
+after the last coding turn finished. The probe then passed the open-task and
+active-thread guards, archive-reply loss and restart, preserved-worktree checks,
+and restart after moving the worktrees. The full run recorded four dispatches,
+two archive requests, and no cleanup errors. All three recorded session-resume
+receipts retained Luna with low reasoning. Initial dispatch was 216 ms and the
+coding round trip was 121.1 s, measured separately from the idle interval.
+
+The Luna/low lost-dispatch-reply scenario passed in run
+`5f8f9487-a412-4db7-8cd3-6d920d748f39`: 229 ms initial dispatch and a 139.8 s
+coding round trip. It also passed the completion lifecycle, including a second
+bridge crash after a successful archive response was dropped. Four model
+dispatches and two archive requests completed without duplicate dispatch or
+cleanup errors. This rerun uses the explicit correlation-ID instructions; it
+does not erase the earlier failed evidence validation.
+
+Shared-worktree run `34e30725-f09c-4e50-b6f3-d52ab09a04ec` passed with Luna/low:
+217 ms initial dispatch and a 142.2 s coding round trip. Both Actors used the
+same linked worktree. The reviewer preserved the builder's source and tests,
+and the controller reran both independent test files. Lost-dispatch-reply and
+archive-reply recovery passed, with four dispatches, two thread archive
+requests, exactly one worktree move, and no cleanup errors.
+
+The real pending-approval boundary passed in run
+`70d3b0ec-d444-4878-8d9b-53cf1e8d82e9`. Luna/low requested a real approval in a
+read-only session. The second delivery remained queued, the bridge reported
+blocked, the policy remained pinned, and the marker was never written. The
+controller interrupted the turn, completed the cancelled test tasks, and
+archived the thread without cleanup errors. The approval was never answered.
+
+Fresh two-VM infrastructure run `ff960087dd07` passed partition, offline writes,
+conflict preservation, operation replay, and replica/hub restart checks against
+candidate `8b20dc85dd96eed99325dd2f4dd515c979705f76d8d60c054e139e15cb982e37`.
+The slowest CLI call was 385 ms, including SSH overhead; the slowest convergence
+was 1,083 ms. The Ubuntu guests had distinct machine and replica identities and
+no shared filesystem. Both VMs were stopped afterward, preserving their disks.
+An earlier attempt stopped at fingerprint validation because the importing
+launcher generated a local Python bytecode file; it did not run the gates.
+
+To repeat infrastructure checks without preparing a manual Claude handoff:
+
+```sh
+python3 scripts/remote/rehearse.py --infrastructure-only
+```
+
+That committed entry point passed in run `9bea314529dc` against candidate
+`8a71de401d222249ecee48056db27fa766e49b631e8192f851acb58ddff2ecb6`, with a
+270 ms maximum CLI call and 1,003 ms maximum convergence. It created no manual
+agent task, recorded real agents as not run, and both VMs stopped cleanly.
+
+The follow-up code passed `npm run verify`: production UI build, 213 tests,
+and the complete seed-1 acceptance scenario. The shared-worktree setup and
+retirement checks also passed a focused 10-test run.
+
+The guests currently lack authenticated Codex runtimes. This infrastructure
+result does not qualify a bridge-driven remote Luna handoff. VMs also share the
+Mac's physical hardware and uplink. A real human approval round trip,
+Desktop-owned sessions, and the unimplemented Claude/Cursor adapters remain
+unqualified.
