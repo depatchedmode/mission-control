@@ -72,7 +72,7 @@ Apply a positive integer limit; throw RangeError for zero, negative, non-integer
 Do not mutate the input array or task objects. Return the selected original task objects.
 Empty input returns []. Use no dependencies. Add meaningful Node tests in queue.test.mjs.`
 
-export async function createWorktrees(root, challenge) {
+export async function createWorktrees(root, challenge, { shared = false } = {}) {
   const repository = join(root, 'fixture-repository')
   await mkdir(repository, { recursive: true })
   await writeFile(join(repository, 'queue.mjs'), `export const challenge = ${JSON.stringify(challenge)}\nexport function selectReadyTasks() { throw new Error('Not implemented') }\n`)
@@ -83,6 +83,7 @@ export async function createWorktrees(root, challenge) {
   await git(['-c', 'user.name=Pardner Rehearsal', '-c', 'user.email=rehearsal@localhost', 'commit', '--quiet', '-m', 'test: seed isolated rehearsal fixture'])
   const trees = {}
   for (const actor of ['builder', 'reviewer']) {
+    if (shared && actor === 'reviewer') { trees.reviewer = trees.builder; continue }
     const path = join(root, actor)
     await git(['worktree', 'add', '--quiet', '--detach', path, 'HEAD'])
     trees[actor] = await realpath(path)

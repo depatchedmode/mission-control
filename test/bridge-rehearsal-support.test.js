@@ -19,6 +19,18 @@ it('creates separate real Git worktrees whose files are independent', async () =
   } finally { await rm(root, { recursive: true, force: true }) }
 })
 
+it('maps both Actors to one linked worktree in shared mode', async () => {
+  const root = await mkdtemp(join(tmpdir(), 'pardner-rehearsal-shared-'))
+  try {
+    const trees = await createWorktrees(root, 'shared-challenge', { shared: true })
+    assert.equal(trees.builder, trees.reviewer)
+    await writeFile(join(trees.builder, 'queue.mjs'), 'shared change')
+    assert.equal(await readFile(join(trees.reviewer, 'queue.mjs'), 'utf8'), 'shared change')
+    const list = await execute('git', ['worktree', 'list', '--porcelain'], { cwd: trees.builder })
+    assert.equal(list.stdout.match(/^worktree /gm).length, 2)
+  } finally { await rm(root, { recursive: true, force: true }) }
+})
+
 it('relay forwards real bytes and drops only an accepted dispatch response', async () => {
   const upstream = new WebSocketServer({ host: '127.0.0.1', port: 0 })
   await once(upstream, 'listening')

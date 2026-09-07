@@ -11,11 +11,11 @@ import { completionTaskDescription, rehearseCompletion } from '../support/bridge
 
 const args = process.argv.slice(2)
 if (!args.includes('--run')) {
-  console.log('Run real Codex inference in isolated worktrees: node scripts/bridge-real-rehearsal.js --run [--codex /path/to/codex] [--model gpt-5.6-luna --reasoning-effort low] [--completion-lifecycle] [--drop-dispatch-reply] [--idle-seconds 3600]')
+  console.log('Run real Codex inference in isolated worktrees: node scripts/bridge-real-rehearsal.js --run [--codex /path/to/codex] [--model gpt-5.6-luna --reasoning-effort low] [--shared-worktree] [--completion-lifecycle] [--drop-dispatch-reply] [--idle-seconds 3600]')
   process.exit(0)
 }
 const valueOptions = ['--idle-seconds', '--codex', '--model', '--reasoning-effort']
-const allowed = new Set(['--run', '--drop-dispatch-reply', '--completion-lifecycle', ...valueOptions])
+const allowed = new Set(['--run', '--drop-dispatch-reply', '--completion-lifecycle', '--shared-worktree', ...valueOptions])
 for (let i = 0; i < args.length; i++) {
   assert.ok(allowed.has(args[i]), `Unknown option ${args[i]}`)
   if (valueOptions.includes(args[i])) { assert.ok(args[i + 1] && !args[i + 1].startsWith('--'), 'Supply an option value'); i++ }
@@ -25,6 +25,7 @@ const idleSeconds = Number(option('--idle-seconds') ?? 0)
 const codexBinary = option('--codex') ?? 'codex'
 const requestedModel = option('--model')
 const requestedEffort = option('--reasoning-effort')
+const sharedWorktree = args.includes('--shared-worktree')
 assert.ok(!requestedEffort || requestedModel, '--reasoning-effort requires --model')
 assert.ok(Number.isInteger(idleSeconds) && idleSeconds >= 0 && idleSeconds <= 3600)
 const source = fileURLToPath(new URL('..', import.meta.url))
@@ -38,6 +39,7 @@ const challenge = randomUUID()
 const report = { runId, challenge, startedAt: new Date().toISOString(), passed: false, checks: {}, limitations: [
   'Co-host rehearsal only; separate-machine, hub-partition, and approval round trips are not qualified by this run.',
 ] }
+report.topology = sharedWorktree ? 'shared-worktree' : 'separate-worktrees'
 const processes = []
 let control, proxy, bridge, crashRecovery
 let serviceToken = ''
@@ -62,9 +64,9 @@ const shellQuote = value => `'${value.replaceAll("'", "'\\''")}'`
 const nodeCommand = [process.execPath, cliPath, '--data', serviceDirectory].map(shellQuote).join(' ')
 
 try {
-  progress('Freezing the application candidate and creating two isolated Git worktrees')
+  progress(`Freezing the application candidate and creating ${sharedWorktree ? 'one shared' : 'two separate'} isolated Git worktree(s)`)
   report.candidate = await freezeCandidate(source, candidateDirectory)
-  report.worktrees = await createWorktrees(root, challenge)
+  report.worktrees = await createWorktrees(root, challenge, { shared: sharedWorktree })
   await save('candidate.json', report.candidate)
   const service = launch(process.execPath, [cliPath, 'serve', '--data', serviceDirectory, '--http-port', '0', '--ws-port', '0'])
   await eventually(() => { service.check(); return service.output().stdout.includes('\n') }, { label: 'Pardner service' })
@@ -79,14 +81,14 @@ Every handoff JSON must preserve runId=${JSON.stringify(runId)} and challenge=${
 Use the Pardner CLI to read the assigned task: ${nodeCommand} show TASK_ID --actor ACTOR_ID.
 Use --actor explicitly for every write. Use fresh operation IDs for new writes and preserve IDs when retrying.
 Do not call mentions claim-next or ack; the bridge owns receipt. Do not commit, push, access other services, or modify files outside your worktree.
-Only queue.mjs and queue.test.mjs may change. Do not read the other Actor's worktree.
+${sharedWorktree ? 'Both Actors share this test worktree. Builder may change only queue.mjs and queue.test.mjs. Reviewer may change only reviewer.test.mjs; preserve the builder files.' : "Only queue.mjs and queue.test.mjs may change. Do not read the other Actor's worktree."}
 Finish by using the real Pardner handoff command, not just by replying in chat. Get current assignee/status revisions from show before handoff.
 The handoff message must be a JSON string (serialize it with JSON.stringify using a Node script and invoke CLI via execFileSync, not shell interpolation).
 Record your actual cwd, challenge, source SHA256, test command/output, and session Actor in the message.`
   const description = `${requirements}\n\n${common}
 BUILDER: implement queue.mjs (export challenge = ${JSON.stringify(challenge)}) and your tests. Run them.
 Hand off this task to reviewer with status review and a message containing JSON fields kind="builder-artifact", runId, challenge, actor="builder", cwd, source (full queue.mjs), sourceSha256, tests (full queue.test.mjs), and testOutput.
-REVIEWER: obtain the source ONLY from the builder-artifact handoff in this task's comments. Verify its SHA256, write queue.mjs in your own worktree, and write your own independent queue.test.mjs. Run your tests.
+REVIEWER: ${sharedWorktree ? 'Read queue.mjs from the shared worktree and verify that its exact contents and SHA256 match the builder-artifact handoff. Do not rewrite the implementation or builder tests. Write your own independent reviewer.test.mjs.' : "Obtain the source ONLY from the builder-artifact handoff in this task's comments. Verify its SHA256, write queue.mjs in your own worktree, and write your own independent queue.test.mjs."} Run your tests.
 If it passes, hand off to human with status review and message JSON fields kind="review-result", runId, challenge, actor="reviewer", cwd, sourceSha256, verdict="pass", testOutput. If it fails, report verdict="fail" to human with specific evidence. Never impersonate another Actor.`
   const task = await cli(['task', 'create', '--title', `Bridge qualification ${runId.slice(0, 8)}`, '--description', description, '--actor', 'human'])
   report.taskId = task.result.taskId
@@ -210,6 +212,11 @@ If it passes, hand off to human with status review and message JSON fields kind=
   assert.equal(sha256(artifact.source), artifact.sourceSha256)
   assert.equal(review.sourceSha256, artifact.sourceSha256)
   report.checks.artifactTransfer = true
+  if (sharedWorktree) {
+    assert.equal(report.worktrees.builder, report.worktrees.reviewer)
+    assert.equal(await readFile(join(report.worktrees.builder, 'queue.test.mjs'), 'utf8'), artifact.tests, 'Reviewer must preserve builder tests in the shared worktree')
+    report.checks.sharedWorktree = true
+  }
   const independentTest = `import assert from 'node:assert/strict';
 const { selectReadyTasks, challenge } = await import(process.argv[2]);
 assert.equal(challenge, ${JSON.stringify(challenge)});
@@ -235,11 +242,13 @@ assert.equal(JSON.stringify(tasks),before); console.log('Independent queue asser
     const cwd = report.worktrees[actor]
     assert.equal(sha256(await readFile(join(cwd, 'queue.mjs'))), artifact.sourceSha256)
     const checks = await execute(process.execPath, [join(root, 'independent-check.mjs'), join(cwd, 'queue.mjs')], { timeout: 10000 })
-    const agentTests = await execute(process.execPath, ['--test', 'queue.test.mjs'], { cwd, timeout: 10000 })
+    const testFile = sharedWorktree && actor === 'reviewer' ? 'reviewer.test.mjs' : 'queue.test.mjs'
+    const agentTests = await execute(process.execPath, ['--test', testFile], { cwd, timeout: 10000 })
     const diff = await execute('git', ['diff', '--', 'queue.mjs'], { cwd })
     await save(`${actor}-verification.json`, { independent: checks.stdout, tests: agentTests.stdout, diff: diff.stdout })
     const changed = (await execute('git', ['status', '--porcelain'], { cwd })).stdout.trimEnd().split('\n').filter(Boolean)
-    assert.ok(changed.every(line => ['queue.mjs', 'queue.test.mjs'].includes(line.slice(3))), `Unexpected ${actor} worktree changes: ${changed}`)
+    const allowedFiles = ['queue.mjs', 'queue.test.mjs', ...(sharedWorktree ? ['reviewer.test.mjs'] : [])]
+    assert.ok(changed.every(line => allowedFiles.includes(line.slice(3))), `Unexpected ${actor} worktree changes: ${changed}`)
   }
   report.checks.independentTests = true
   await eventually(() => proxy.events.filter(event => event.type === 'completed').length >= 3, { label: 'three completed model turns', timeoutMs: 120000 })

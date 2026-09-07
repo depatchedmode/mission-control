@@ -73,8 +73,11 @@ export async function rehearseCompletion({ report, root, cli, handoff, control, 
     manifests[actor] = await fileManifest(cwd)
     gitStatus[actor] = (await execute('git', ['status', '--porcelain'], { cwd })).stdout.trimEnd().split('\n').sort()
   }
-  manifests.builder['.lifecycle-release'] = sha256(report.challenge)
-  gitStatus.builder.push('?? .lifecycle-release'); gitStatus.builder.sort()
+  for (const [actor, cwd] of Object.entries(report.worktrees)) {
+    if (cwd !== builder) continue
+    manifests[actor]['.lifecycle-release'] = sha256(report.challenge)
+    gitStatus[actor].push('?? .lifecycle-release'); gitStatus[actor].sort()
+  }
   await save('pre-archive-manifests.json', { manifests, gitStatus })
   let recovery
   const onEvent = event => {
@@ -103,6 +106,7 @@ export async function rehearseCompletion({ report, root, cli, handoff, control, 
   assert.equal(completed?.status, 'completed')
   const archives = proxy.events.filter(event => event.type === 'archive-request')
   assert.equal(archives.length, 2, 'Recovery must not repeat a successful archive request')
+  assert.equal(retirement.worktrees.length, new Set(Object.values(report.worktrees)).size, 'Shared worktrees must move only once')
   assert.ok(archives.every(event => event.at >= completed.at), 'Archival must follow turn completion')
   for (const [actor, session] of Object.entries(report.sessions)) {
     assert.equal(await control.isArchived({ threadId: session.threadId, worktree: session.cwd }), true)
@@ -111,7 +115,8 @@ export async function rehearseCompletion({ report, root, cli, handoff, control, 
     await assert.rejects(access(session.cwd), { code: 'ENOENT' })
     assert.deepEqual(await fileManifest(moved.destination), manifests[actor])
     assert.deepEqual((await execute('git', ['status', '--porcelain'], { cwd: moved.destination })).stdout.trimEnd().split('\n').sort(), gitStatus[actor])
-    await execute(process.execPath, ['--test', 'queue.test.mjs'], { cwd: moved.destination, timeout: 10000 })
+    const testFile = report.topology === 'shared-worktree' && actor === 'reviewer' ? 'reviewer.test.mjs' : 'queue.test.mjs'
+    await execute(process.execPath, ['--test', testFile], { cwd: moved.destination, timeout: 10000 })
   }
   checks.threadsArchived = true
   checks.worktreesPreserved = true
