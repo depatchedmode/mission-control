@@ -54,6 +54,12 @@ New dispatch requires the hub; accepted work can continue and save locally while
 the hub is unavailable. Delivery leases are not task-execution locks, and external
 side effects still require harness-level idempotency.
 
+An opt-in [local agent bridge](docs/PARDNER-BRIDGE.md) can receive deliveries
+durably and wake explicitly authorized, dedicated Codex App Server sessions.
+It queues busy work and reconciles uncertain dispatch without model polling.
+Real co-host rehearsals cover handoff and archive recovery; other adapters and
+separate-machine qualification remain follow-up work.
+
 ## Quick start
 
 Use Node **24.11.1**. From this checkout:
