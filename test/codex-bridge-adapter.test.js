@@ -1,15 +1,19 @@
 import { it } from 'node:test'
 import assert from 'node:assert/strict'
 import { once } from 'node:events'
-import { realpath } from 'node:fs/promises'
+import { realpath, mkdtemp, mkdir, symlink, rm } from 'node:fs/promises'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
 import { WebSocketServer } from 'ws'
+import { retireCompletedBridge } from '../lib/bridge-retirement.js'
 import { CodexBridgeAdapter, localEndpoint } from '../lib/codex-bridge-adapter.js'
 
 async function fixture(run) {
   const server = new WebSocketServer({ host: '127.0.0.1', port: 0 })
   await once(server, 'listening')
+  const root = await mkdtemp(join(tmpdir(), 'pardner-adapter-'))
   const policy = { approvalPolicy: 'on-request', approvalsReviewer: 'user', sandbox: { type: 'readOnly' } }
-  const mapping = { endpoint: `ws://127.0.0.1:${server.address().port}`, threadId: 'thread-one', worktree: await realpath('/tmp'), expectedPolicy: policy }
+  const mapping = { endpoint: `ws://127.0.0.1:${server.address().port}`, threadId: 'thread-one', worktree: await realpath(root), expectedPolicy: policy }
   const state = { calls: [], status: { type: 'idle' }, turns: [], cwd: mapping.worktree }
   server.on('connection', socket => {
     state.socket = socket
@@ -35,10 +39,11 @@ async function fixture(run) {
     })
   })
   const adapter = new CodexBridgeAdapter({ ...mapping, requestTimeoutMs: 200 })
-  try { await run({ adapter, state, mapping }) } finally {
+  try { await run({ adapter, state, mapping, root }) } finally {
     adapter.close()
     for (const client of server.clients) client.terminate()
     await new Promise(resolve => server.close(resolve))
+    await rm(root, { recursive: true, force: true })
   }
 }
 
@@ -117,4 +122,31 @@ it('finds descendants outside the worktree without treating unrelated threads as
     { id: 'unrelated', cwd: '/different' },
   ]
   assert.deepEqual((await adapter.worktreeThreads(mapping, false)).map(thread => thread.id), ['grandchild', 'child'])
+}))
+
+it('matches unmapped ownership through a portable symlink and tolerates missing historical paths', () => fixture(async ({ adapter, state, mapping, root }) => {
+  const checkout = join(root, 'checkout'), alias = join(root, 'alias')
+  await mkdir(checkout)
+  await symlink(checkout, alias, 'dir')
+  mapping.worktree = await realpath(checkout)
+  state.relatedThreads = [
+    { id: 'unmapped-active', cwd: alias, status: { type: 'active' } },
+    { id: 'unrelated', cwd: join(root, 'unrelated') },
+    { id: 'old', cwd: join(root, 'missing-history') },
+    { id: 'descendant', cwd: join(root, 'missing-descendant'), forkedFromId: mapping.threadId },
+  ]
+  assert.deepEqual((await adapter.worktreeThreads(mapping, false)).map(t => t.id), ['unmapped-active', 'descendant'])
+  state.cwd = checkout
+  let moved = false
+  await retireCompletedBridge({
+    config: { mappings: [{ ...mapping, actorId: 'builder', enabled: true, allowedTaskIds: ['one'] }],
+      inboxDirectory: join(root, 'inbox'), dataDirectory: join(root, 'service'), completionCleanup: { archiveDirectory: join(root, 'archive') } },
+    inbox: { retirement: () => null, rows: () => [], hasClaim: () => false, saveRetirement: () => {}, status: () => {} },
+    source: { actors: async () => ({ tasks: {} }), context: async () => ({ task: { status: 'completed' }, conflicts: {} }), pending: async () => ({ mentions: [] }) },
+    adapters: new Map([['builder', adapter]]),
+  }, { plan: async () => ({}), move: async () => { moved = true } })
+  assert.equal(moved, false)
+  assert.equal(state.calls.some(call => call.method === 'thread/archive'), false)
+  await rm(checkout, { recursive: true })
+  assert.deepEqual((await adapter.worktreeThreads(mapping, false)).map(t => t.id), ['unmapped-active', 'descendant'])
 }))

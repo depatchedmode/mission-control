@@ -277,3 +277,32 @@ Real Luna/low run `64a2205b-df19-4ca2-8992-c1e838036d1f` passed after that fix,
 including lost-dispatch-reply recovery and the completion/archive lifecycle.
 It recorded a 230 ms initial dispatch, four dispatches, two archive requests,
 preserved worktrees, and no cleanup errors. This run did not repeat the idle hour.
+
+## Five-finding review fix
+
+The review of `7a733637` found incorrect branch projection fixtures, ownership
+checks skipped after successful archives, literal working-directory comparison,
+unsafe runtime-storage layouts, and queue starvation behind missing context.
+The fixes use public `branch_of` relationships, recheck current ownership before
+remaining cleanup actions, compare canonical filesystem locations, reject runtime
+storage within moving checkouts, and let later eligible deliveries dispatch while
+missing-context rows retain their queued state and visible reason.
+
+The regression files were copied into an isolated source snapshot of `7a733637`,
+leaving its runtime unchanged. That baseline run had 20 failures and 34 passes
+across 54 tests, reproducing all five findings. The same tests pass with the fixes;
+the broader bridge, mention-lifecycle, and branching run passed all 78 tests.
+Coverage includes real service projections through `BridgeSource`, branch creation
+between cleanup steps, ownership changes after a failed move, portable symlink
+aliases and parent traversal, preserved inbox state, a deleted originating comment,
+temporarily lagged context, and restart after an actual linked-worktree move.
+
+The zero-model Codex smoke passed initialize, thread start/read/resume/archive/list
+with zero model turns. `npm run verify` passed the production UI build, all 239
+tests, and the complete seed-1 acceptance scenario. Acceptance output is locally
+recorded under `output/acceptance/2026-09-08T05-03-11.589Z`, against candidate
+`53b13907ec8a3a0b6c850d68dc414026ddf797f78f060f2193b1439a411e8db3`.
+
+Real model rehearsals were not rerun for this fix pass. The historical observations
+above remain tied to their original candidates and do not qualify this candidate
+for the remaining real-agent gates.

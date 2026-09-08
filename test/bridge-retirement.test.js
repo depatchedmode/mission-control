@@ -22,7 +22,7 @@ async function fixture(run) {
       if (state.loseReply) { state.loseReply = false; throw new Error('reply lost') }
     },
   }
-  const bridge = { config: { mappings, completionCleanup: { archiveDirectory: join(root, 'archive') } }, inbox,
+  const bridge = { config: { mappings, inboxDirectory: root, dataDirectory: join(root, 'service'), completionCleanup: { archiveDirectory: join(root, 'archive') } }, inbox,
     source: { actors: async () => ({ tasks: state.branches ?? {} }), pending: async () => ({ mentions: state.pending }),
       context: async ({ taskId }) => ({ task: { status: state.tasks[taskId] }, conflicts: state.conflicts }) },
     adapters: new Map(mappings.map(mapping => [mapping.actorId, adapter])),
@@ -56,7 +56,7 @@ it('waits for all tasks, conflicts, deliveries, and active turns, then archives 
 }))
 
 it('an open related branch prevents cleanup even when the configured parent is complete', () => fixture(async state => {
-  state.branches = { child: { id: 'child', branch: { parentId: 'one' } } }
+  state.branches = { child: { id: 'child', branch_of: 'one' } }
   state.tasks.child = 'review'; await state.tick()
   assert.equal(state.inbox.retirement(), null)
   state.tasks.child = 'completed'; await state.tick()
@@ -123,7 +123,7 @@ for (const actor of ['builder', 'reviewer']) {
 
 it('discovers an open branch added during archival before continuing', () => fixture(async state => {
   state.afterArchive = () => {
-    state.branches = { child: { id: 'child', branch: { parentId: 'one' } } }
+    state.branches = { child: { id: 'child', branch_of: 'one' } }
     state.tasks.child = 'review'
   }
   await state.tick()
@@ -162,6 +162,35 @@ it('pauses between worktree moves and resumes without repeating a completed move
   assert.equal(state.inbox.retirement().state, 'archived')
 }))
 
+it('rechecks unmapped ownership after archived threads and a failed move without resuming them', () => fixture(async state => {
+  state.failMove = true
+  await assert.rejects(state.tick(), /disk unavailable/)
+  assert.deepEqual(state.archived, ['builder', 'reviewer'])
+  const saved = state.inbox.retirement()
+  const adapter = state.bridge.adapters.get('builder')
+  adapter.availability = async () => { throw new Error('Archived threads must not be resumed') }
+  adapter.archive = async () => { throw new Error('Successful archives must not repeat') }
+  state.extraThreads = [{ id: 'new-active-thread', cwd: '/shared-fixture', status: { type: 'active' } }]
+  state.failMove = false
+  await state.tick()
+  assert.deepEqual(state.moved, [])
+  assert.deepEqual(state.inbox.retirement(), saved)
+  state.extraThreads = []
+  await state.tick()
+  assert.deepEqual(state.moved, ['/shared-fixture'])
+  assert.equal(state.inbox.retirement().state, 'archived')
+}))
+
+it('checks new unmapped ownership between successful thread archives and moves', () => fixture(async state => {
+  state.afterArchive = mapping => {
+    if (mapping.actorId === 'reviewer') state.extraThreads = [{ id: 'new-active-thread', cwd: '/shared-fixture' }]
+  }
+  await state.tick()
+  assert.deepEqual(state.archived, ['builder', 'reviewer'])
+  assert.deepEqual(state.moved, [])
+  assert.equal(state.inbox.retirement().state, 'archiving')
+}))
+
 it('moving a real dirty worktree preserves tracked, untracked, and ignored files and tolerates retry', async () => {
   const root = await mkdtemp(join(tmpdir(), 'pardner-archive-worktree-'))
   try {
@@ -178,3 +207,16 @@ it('moving a real dirty worktree preserves tracked, untracked, and ignored files
     await assert.rejects(readFile(join(trees.builder, 'queue.mjs')), { code: 'ENOENT' })
   } finally { await rm(root, { recursive: true, force: true }) }
 })
+
+it('a restored mapped thread blocks a partial retirement without resuming or rearchiving it', () => fixture(async state => {
+  state.failMove = true
+  await assert.rejects(state.tick(), /disk unavailable/)
+  state.failMove = false
+  const adapter = state.bridge.adapters.get('builder')
+  adapter.isArchived = async () => false
+  adapter.availability = async () => { throw new Error('Do not resume a restored retirement member') }
+  adapter.archive = async () => { throw new Error('Do not repeat archived receipts') }
+  await state.tick()
+  assert.deepEqual(state.moved, [])
+  assert.equal(state.inbox.retirement().state, 'archiving')
+}))

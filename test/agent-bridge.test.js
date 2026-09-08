@@ -224,3 +224,39 @@ it('failed replica verification prevents completion cleanup from accessing tasks
   assert.equal(state.inbox.retirement(), null)
   assert.equal(state.bridge.sourceError, 'WORKSPACE_MISMATCH')
 }))
+
+it('later eligible context dispatches once while lagged context stays queued and can arrive later', () => fixture(async state => {
+  const second = { ...mention, id: 'mention-two', commentId: 'comment-two' }
+  state.harness.state = 'busy'; state.source.mentions.push(mention)
+  await state.bridge.wake()
+  let missing = true
+  const context = state.source.context.bind(state.source)
+  state.source.context = async received => {
+    const value = await context(received)
+    if (missing && received.id === mention.id) value.comments = []
+    return value
+  }
+  state.source.mentions.push(second)
+  await state.bridge.wake()
+  state.harness.state = 'ready'
+  await state.bridge.dispatch(state.config.mappings[0])
+  assert.equal(state.harness.calls.length, 1)
+  assert.ok(state.harness.calls[0].includes('Pardner delivery mention-two.'))
+  assert.match(state.inbox.rows().find(row => row.id === mention.id).reason, /originating context/)
+  assert.equal(state.inbox.rows().find(row => row.id === mention.id).state, 'queued')
+  missing = false; state.harness.state = 'ready'
+  await state.bridge.dispatch(state.config.mappings[0])
+  assert.equal(state.harness.calls.length, 2)
+  assert.equal(state.inbox.rows().find(row => row.id === mention.id).state, 'accepted')
+}))
+
+it('uncertain dispatch remains an Actor-wide barrier even when later context is eligible', () => fixture(async state => {
+  state.harness.state = 'busy'
+  state.source.mentions.push(mention, { ...mention, id: 'mention-two', commentId: 'comment-two' })
+  await state.bridge.wake()
+  state.inbox.begin(mention.id, 'unknown prompt'); state.inbox.recover()
+  state.harness.state = 'ready'
+  await state.bridge.dispatch(state.config.mappings[0])
+  assert.equal(state.harness.calls.length, 0)
+  assert.match(state.bridge.states.builder, /uncertain/)
+}))

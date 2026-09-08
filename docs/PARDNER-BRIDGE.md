@@ -102,6 +102,10 @@ local service or mismatched replica identity stops dispatch.
 If a hub delivery arrives ahead of replica synchronization, dispatch waits until
 the originating mention and comment are present in local task context. Withdrawn
 mentions remain visibly queued instead of waking an agent on stale context.
+Such a row does not block later authorized deliveries with complete context.
+The bridge dispatches at most one eligible delivery per Actor per pass, retaining
+the waiting row and its reason so later replica synchronization can release it.
+Busy sessions, approvals, and uncertain dispatch still block that Actor's dispatch.
 
 Deliveries progress through `queued → dispatching → accepted`. Busy sessions retain
 queued work. `accepted` means the harness returned a turn ID or matching history
@@ -151,6 +155,14 @@ outstanding claims, uncertain dispatches, busy threads, and approval requests al
 prevent cleanup. Unmapped threads using a worktree or descended from a mapped
 thread also prevent cleanup. Explicitly include every associated task/session;
 the bridge cannot infer relationships in other applications.
+Branch discovery follows the public task projection's `branch_of` links through
+parents, siblings, and descendants, including branches added during cleanup.
+
+Keep `inboxDirectory` and `dataDirectory` outside every checkout scheduled for
+movement. Cleanup validates canonical containment, including symlinked ancestors
+and runtime directories that do not exist yet, before recording retirement or
+archiving a thread. Invalid layouts report the field and path to reconfigure;
+the bridge does not relocate runtime databases or rewrite connections.
 
 Once eligible, the bridge durably retires the group from dispatch, archives its
 Codex threads, then uses `git worktree move` to relocate each linked checkout
@@ -164,6 +176,12 @@ branch status and pending deliveries. Reopened work pauses the remaining steps,
 including during a single cleanup attempt. The durable record preserves progress
 for retry once the group is eligible again. A request already in flight may
 finish; these checkpoints do not lock task edits across Codex and Git operations.
+Current session ownership is also checked before each remaining step and retry,
+even after all mapped threads have archive receipts. An unmapped session at the
+source or planned archive location blocks remaining moves. Thread working
+directories are compared by canonical filesystem location, preserving descendant
+checks and tolerating missing historical paths after a move. Archived sessions
+are inspected read-only; their successful archive requests are not repeated.
 
 Cleanup requires the bridge, Pardner service, and Codex server to be running.
 Rehearsal configurations enable it, but a test returning to human review does
