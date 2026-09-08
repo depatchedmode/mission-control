@@ -109,3 +109,54 @@ it('configuration and CLI status require explicit authority, and reconciliation 
     await assert.rejects(openBridgeInbox({ ...config, replicaId: 'other' }), { code: 'WORKSPACE_MISMATCH' })
   } finally { lease?.close(); inbox?.close(); await rm(root, { recursive: true, force: true }) }
 })
+
+it('a task missing from the local replica does not starve later context and dispatches once after sync', { timeout: 15000 }, () => withWorkspaceServer(async ({ server, create, context, operation }) => {
+  const root = await mkdtemp(join(tmpdir(), 'pardner-bridge-context-'))
+  let replica, bridge, inbox
+  try {
+    const second = await create()
+    await operation('comment.add', { taskId: second, text: '@builder complete local context' })
+    const secondMention = (await context(second)).mentions[0]
+    const dataDirectory = join(root, 'replica')
+    replica = new AutomergeSyncServer({ directory: dataDirectory, role: 'replica',
+      hubUrl: `http://127.0.0.1:${server.httpPort}`, hubWsUrl: `ws://127.0.0.1:${server.wsPort}/automerge`,
+      hubToken: 'test-token', apiToken: 'test-token', env: {}, httpPort: 0, wsPort: 0, logger: {} })
+    await replica.start()
+    replica.store.adapter.disconnect()
+    await writeFile(join(dataDirectory, 'connection.json'), JSON.stringify({ httpUrl: `http://127.0.0.1:${replica.httpPort}`, token: 'test-token' }))
+    const first = await create()
+    await operation('comment.add', { taskId: first, text: '@builder context still on the hub' })
+    const firstMention = (await context(first)).mentions[0]
+    const mapping = { actorId: 'builder', enabled: true, worktree: root, threadId: 'thread',
+      allowedTaskIds: [first, second], allowedFromActorIds: ['alice'] }
+    const config = { workspaceId: replica.store.manifest.workspaceId, replicaId: replica.store.manifest.replicaId,
+      dataDirectory, inboxDirectory: join(root, 'inbox'), mappings: [mapping] }
+    inbox = await openBridgeInbox(config)
+    const source = new BridgeSource(config), harness = new EventEmitter(), calls = []
+    Object.assign(harness, { availability: async () => 'ready', reconcile: async () => null, close() {},
+      dispatch: async (_mapping, prompt) => { calls.push(JSON.parse(prompt.split('\n\n').at(-1)).mention.id); return `turn-${calls.length}` } })
+    bridge = new AgentBridge({ config, inbox, source, adapterFactory: () => harness })
+    // The hub can deliver a receipt before its task reaches the local replica.
+    inbox.receive('builder', { mention: firstMention }, mapping)
+    assert.equal((await source.actors()).tasks[first], undefined)
+    await assert.rejects(source.context(firstMention), { status: 404, code: 'NOT_FOUND' })
+    inbox.receive('builder', { mention: secondMention }, mapping)
+    assert.deepEqual(inbox.rows().map(row => row.id), [firstMention.id, secondMention.id])
+    await bridge.dispatch(mapping)
+    assert.deepEqual(calls, [secondMention.id])
+    const waiting = inbox.rows().find(row => row.id === firstMention.id)
+    assert.equal(waiting.state, 'queued')
+    assert.equal(waiting.reason, 'waiting: originating context has not arrived or the mention was withdrawn')
+    await bridge.dispatch(mapping)
+    assert.deepEqual(calls, [secondMention.id])
+    const adapter = replica.store.adapter
+    adapter.connect(adapter.peerId, adapter.peerMetadata)
+    await eventually(async () => (await source.actors()).tasks[first])
+    await bridge.dispatch(mapping); await bridge.dispatch(mapping)
+    assert.deepEqual(calls, [secondMention.id, firstMention.id])
+    assert.ok(inbox.rows().every(row => row.state === 'accepted'))
+  } finally {
+    await bridge?.stop(); inbox?.close(); await replica?.stop()
+    await rm(root, { recursive: true, force: true })
+  }
+}))

@@ -260,3 +260,21 @@ it('uncertain dispatch remains an Actor-wide barrier even when later context is 
   assert.equal(state.harness.calls.length, 0)
   assert.match(state.bridge.states.builder, /uncertain/)
 }))
+
+for (const code of ['LOCAL_SERVICE_UNAVAILABLE', 'AUTH_REQUIRED']) {
+  it(`context ${code} errors remain visible and do not release later deliveries`, () => fixture(async state => {
+    state.harness.state = 'busy'
+    state.source.mentions.push(mention, { ...mention, id: 'mention-two', commentId: 'comment-two' })
+    await state.bridge.wake()
+    const queued = state.inbox.rows()
+    const error = Object.assign(new Error('Context request failed'), { code })
+    state.source.context = async () => { throw error }
+    state.harness.state = 'ready'
+    await assert.rejects(state.bridge.dispatch(state.config.mappings[0]), value => value === error)
+    await state.bridge.wake()
+    assert.equal(state.bridge.states.builder, code)
+    assert.ok(state.inbox.statuses().some(status => status.actor === 'builder' && status.state === code))
+    assert.equal(state.harness.calls.length, 0)
+    assert.deepEqual(state.inbox.rows(), queued)
+  }))
+}
