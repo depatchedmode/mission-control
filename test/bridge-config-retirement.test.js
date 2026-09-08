@@ -33,11 +33,11 @@ for (const alias of ['direct', 'parent']) {
       const path = join(root, 'config.json')
       await writeFile(path, JSON.stringify(raw))
       const config = await bridgeConfig(path), signature = canonical(config.mappings)
-      const archives = [], archived = new Set()
+      const archives = []
       const adapterFactory = () => Object.assign(new EventEmitter(), {
-        availability: async mapping => { assert.ok(!archived.has(mapping.threadId), 'Archived threads must not resume'); return 'ready' },
-        isArchived: async mapping => archived.has(mapping.threadId), worktreeThreads: async () => [], close() {},
-        archive: async mapping => { assert.ok(!archived.has(mapping.threadId), 'Successful archives must not repeat'); archives.push(mapping.threadId); archived.add(mapping.threadId) },
+        availability: async mapping => { assert.ok(!archives.includes(mapping.threadId), 'Archived threads must not resume'); return 'ready' },
+        isArchived: async mapping => archives.includes(mapping.threadId), worktreeThreads: async () => [], close() {},
+        archive: async mapping => { assert.ok(!archives.includes(mapping.threadId), 'Successful archives must not repeat'); archives.push(mapping.threadId) },
       })
       inbox = await openBridgeInbox(config)
       bridge = new AgentBridge({ config, inbox, source: new BridgeSource(config), adapterFactory })
